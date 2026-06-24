@@ -62,7 +62,7 @@ A row is one of four kinds. Content rows (`context`, `deletion`, `insertion`) ar
 
 - Content comes from git: the old version via `git show <rev>:<path>`, the new version from the worktree (or `git show` for branch scope). An `untracked` file has empty old content; a `deleted` file has empty new content.
 - The diff is computed with the `similar` crate (`TextDiff::from_lines`) over old vs new content, grouped into hunks with a context margin of 3 lines.
-- `emphasis` comes from `similar`'s inline word-level diff over each paired line within a change block — a run of deletions immediately followed by a run of insertions pairs line by line; unpaired lines get empty `emphasis`.
+- `emphasis` comes from `similar`'s inline word-level diff over related lines within a change block (a run of deletions then a run of insertions). Lines are matched by **homolog search**, not position (after git-delta): each deletion claims the first not-yet-taken insertion similar enough to be the same line edited; skipped insertions and unmatched deletions stay plain. A pair below the similarity bar — a wholesale rewrite sharing only scraps like indentation or `///` — gets no emphasis at all, since the line-level red/green already carries it and full-line highlighting would be noise. Adjacent changed words separated only by whitespace coalesce into one span (the whitespace is swallowed), so a changed phrase highlights as one block, not fragments; gaps holding any non-space character keep the words separate. Each span is then trimmed to its tokens — leading and trailing whitespace is never highlighted, so a deepened indent or the space before an added trailing comment paints nothing.
 - Highlighting comes from `syntect` over the broad bat/`two-face` syntax and theme set, so most languages color out of the box: the full old and new content are highlighted once each, and every row reads its line's `spans`. Full-file highlighting is why a multi-line string or comment colors correctly inside a hunk.
 - The diff and the highlighting are both cached per file by content; a poll that finds the file unchanged reuses the prior rows and spans rather than recomputing.
 
@@ -78,16 +78,11 @@ A row is one of four kinds. Content rows (`context`, `deletion`, `insertion`) ar
 - Expanding a `fold` replaces it with its lines as `context` rows; expansion is permanent for the session — an expand is intentional, so there is no collapse-back.
 - A file's leading and trailing unchanged regions fold the same way, so the pane opens focused on the changes.
 
-### Views
-
-- `unified` — one column; a deletion and its replacement appear on adjacent rows; a single line-number gutter. The default, and the only view that works at any sidebar width.
-- `stacked` — per change block, the removed lines as one group then the added lines as one group, each full width with its own gutter; clearer word-diff in a narrow pane.
-- The view is a presentation toggle; the `FileDiff` model is identical across views.
-
 ### Wrapping and the gutter
 
-- Long lines wrap by default; a toggle switches to horizontal scroll, moved with `←`/`→` while the gutter stays pinned. A wrapped continuation row has a blank gutter so numbers stay aligned.
-- The gutter is a fixed line-number column plus the one-cell change bar; in `stacked` and split views it shows both old and new numbers.
+- The diff is one unified column: each change block shows its removed lines then its added lines, full width, with a single line-number gutter.
+- Long lines wrap by default, breaking at word boundaries (a space that fits); a word wider than the column hard-breaks. A toggle switches to horizontal scroll, moved with `←`/`→` while the gutter stays pinned. A wrapped continuation row has a blank gutter so numbers stay aligned, and drops the break's leading space so it never starts almost-empty.
+- The gutter is a fixed line-number column plus the one-cell change bar.
 - A line that carries a comment shows its line number in the comment color, so the change bar keeps its add/remove color and the two never collide.
 - Tabs render as spaces (4 by default) so code and the gutter stay aligned.
 
@@ -101,7 +96,6 @@ A row is one of four kinds. Content rows (`context`, `deletion`, `insertion`) ar
 Presentation flags, each with a default:
 
 - `--theme <name>` — the syntect theme for syntax colors.
-- `--view unified|stacked` — the diff view on open.
 - `--wrap on|off` — whether long lines wrap on open.
 
 ## Failure semantics
@@ -116,7 +110,7 @@ The viewer is read-only and recomputed on every refresh, so it never persists or
 
 ## Non-goals
 
-- No side-by-side split view in this design — a sidebar rarely has the width; it is roadmap.
+- No alternate diff layouts — one unified column only; a side-by-side split is roadmap.
 - No tree-sitter highlighting — syntect only.
 - No editing, staging, or reverting from the viewer.
 - No line-number rebasing of comments as the diff shifts — `review-model.md` owns that, via the snippet.
@@ -126,7 +120,6 @@ The viewer is read-only and recomputed on every refresh, so it never persists or
 - Model from file content, not parsed `git diff` text — text carries no syntax context and no lines to expand; the old/new content carries both. Rejected: keep parsing unified-diff text.
 - `similar` for the diff and the inline word emphasis — one pure-Rust crate does line grouping and word-level emphasis. Rejected: `git2`/libgit2, which adds a C dependency for convenience the crate already provides.
 - `syntect` over tree-sitter — one mature crate, ~200 bundled languages, line spans that map straight to ratatui. Rejected: tree-sitter, which needs a grammar crate and highlight query per language.
-- Unified and stacked, split deferred — both work in a narrow sidebar; side-by-side needs width it rarely has. Rejected: shipping split now.
 - Truecolor syntax theme, current structural colors kept — the add/remove tint, change bars, and selection stay as they are; only syntax token colors come from the theme. Rejected: mapping syntax onto the terminal's 16 ANSI colors, which is less rich.
 - Change bar and tint, not `+`/`−` glyphs — the colored bar plus row tint already mark add versus remove, so the glyphs are redundant on screen. The export snippet keeps `+`/`−`/space markers for the agent. Rejected: showing both.
 - Catppuccin Mocha as the default theme — a cohesive dark palette that matches a Catppuccin terminal, so the diff blends with the shell instead of importing foreign colors. Rejected: a generic bundled theme that clashes with the terminal.

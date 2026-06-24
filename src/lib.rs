@@ -47,6 +47,9 @@ pub fn run() -> Result<()> {
     logln!("start repo={} poll={:?} base={:?}", repo.display(), cfg.poll, cfg.base);
     let mut app = App::new(repo, Scope::Uncommitted, cfg.base.clone());
     app.set_theme(cfg.theme.as_deref());
+    if let Some(wrap) = cfg.wrap {
+        app.wrap = wrap;
+    }
     app.reload()?;
 
     let mut terminal = ratatui::init();
@@ -72,7 +75,7 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, poll: Duration) -> 
         } else {
             viewport
         };
-        app.clamp_diff_scroll(effective);
+        app.clamp_diff_scroll(&ui::diff_row_heights(app, area), effective);
         terminal.draw(|f| ui::render(f, app))?;
         let timeout = poll.saturating_sub(last_poll.elapsed());
         if event::poll(timeout)? {
@@ -143,7 +146,7 @@ const PAGE: isize = 15;
 const HALF_PAGE: isize = 8;
 
 fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
-    use KeyCode::{Backspace, Char, Down, Enter, Esc, PageDown, PageUp, Tab, Up};
+    use KeyCode::{Backspace, Char, Down, Enter, Esc, Left, PageDown, PageUp, Right, Tab, Up};
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
     if app.composing() {
@@ -190,6 +193,9 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
         (Char('k') | Up, _) => app.move_cursor(-1)?,
         (PageDown, _) => app.scroll_diff(PAGE),
         (PageUp, _) => app.scroll_diff(-PAGE),
+        (Char('w'), _) => app.toggle_wrap(),
+        (Right, _) => app.scroll_h(8),
+        (Left, _) => app.scroll_h(-8),
         (Char('u'), false) => app.set_scope(Scope::Uncommitted)?,
         (Char('b'), false) => app.set_scope(Scope::Branch)?,
         (Char('v'), _) => app.toggle_select(),
@@ -219,9 +225,13 @@ fn handle_mouse(app: &mut App, m: MouseEvent, area: Rect) -> Result<()> {
                 }
             } else if let Some(i) = ui::hit_file(area, m.column, m.row, app.files.len()) {
                 app.select_file(i)?;
-            } else if let Some(i) =
-                ui::hit_diff(area, m.column, m.row, app.visible.len(), app.diff_scroll)
-            {
+            } else if let Some(i) = ui::hit_diff(
+                area,
+                m.column,
+                m.row,
+                &ui::diff_row_heights(app, area),
+                app.diff_scroll,
+            ) {
                 app.focus = Focus::Diff;
                 app.diff_cursor = i;
                 app.select_anchor = None;
@@ -230,8 +240,13 @@ fn handle_mouse(app: &mut App, m: MouseEvent, area: Rect) -> Result<()> {
             }
         }
         MouseEventKind::Drag(MouseButton::Left) => {
-            if let Some(i) = ui::hit_diff(area, m.column, m.row, app.visible.len(), app.diff_scroll)
-            {
+            if let Some(i) = ui::hit_diff(
+                area,
+                m.column,
+                m.row,
+                &ui::diff_row_heights(app, area),
+                app.diff_scroll,
+            ) {
                 app.drag_select_to(i);
             }
         }

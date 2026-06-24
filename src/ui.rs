@@ -13,6 +13,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
+use unicode_width::UnicodeWidthChar;
 
 use crate::app::{App, Focus, Mode};
 use crate::diff::{FileState, Row};
@@ -68,14 +69,15 @@ pub fn hit_file(area: Rect, col: u16, row: u16, n_files: usize) -> Option<usize>
     (idx < n_files).then_some(idx)
 }
 
-/// The diff-line index a click at `(col, row)` lands on, or `None` if outside the
-/// diff pane. `diff_scroll` fixes the window so the mapping matches the paint.
+/// The logical diff-row index a click at `(col, row)` lands on, or `None` if outside the
+/// diff pane. `heights` (display rows per logical row) and `diff_scroll` reproduce the
+/// painted window, so a click on any display line of a wrapped row maps to that row.
 #[must_use]
 pub fn hit_diff(
     area: Rect,
     col: u16,
     row: u16,
-    diff_len: usize,
+    heights: &[usize],
     diff_scroll: usize,
 ) -> Option<usize> {
     let rows = vrows(area);
@@ -84,9 +86,15 @@ pub fn hit_diff(
     if !contains(inner, col, row) {
         return None;
     }
-    let start = diff_scroll.min(diff_len.saturating_sub(inner.height as usize));
-    let idx = start + (row - inner.y) as usize;
-    (idx < diff_len).then_some(idx)
+    let target = (row - inner.y) as usize;
+    let mut acc = 0;
+    for (li, h) in heights.iter().enumerate().skip(diff_scroll) {
+        acc += h;
+        if target < acc {
+            return Some(li);
+        }
+    }
+    None
 }
 
 /// The number of diff rows visible in the diff pane, used to clamp the scroll.
@@ -95,6 +103,18 @@ pub fn diff_viewport_height(area: Rect) -> usize {
     let rows = vrows(area);
     let (diff_area, _) = body_split(&rows);
     inner_rect(diff_area).height as usize
+}
+
+/// The display height (rows on screen) of each visible logical diff row, honoring wrap.
+#[must_use]
+pub fn diff_row_heights(app: &App, area: Rect) -> Vec<usize> {
+    let rows = vrows(area);
+    let (diff_area, _) = body_split(&rows);
+    let width = inner_rect(diff_area).width as usize;
+    let total_lines: usize =
+        app.diff.rows.iter().map(|r| if r.is_content() { 1 } else { r.hidden() }).sum();
+    let gutter_w = gutter_width(total_lines);
+    app.visible.iter().map(|r| row_height(r, gutter_w, width, app.wrap)).collect()
 }
 
 /// Rows the inline comment box occupies: one per input line plus the border.
@@ -216,58 +236,60 @@ fn render_diff_view(frame: &mut Frame, app: &App, area: Rect) {
     let total_lines: usize =
         app.diff.rows.iter().map(|r| if r.is_content() { 1 } else { r.hidden() }).sum();
     let gutter_w = gutter_width(total_lines);
+    let layout = RowLayout { gutter_w, width, h_scroll: app.h_scroll, wrap: app.wrap };
     let commented = app.commented_lines();
     let (lo, hi) = app.selection_range();
     let selecting = app.focus == Focus::Diff && app.select_anchor.is_some();
 
-    let row_line = |i: usize| -> Line {
-        let row = &app.visible[i];
-        let cursor = app.focus == Focus::Diff && i == app.diff_cursor;
-        let selected = selecting && i >= lo && i <= hi;
-        render_row(row, gutter_w, width, commented.contains(&i), cursor, selected)
+    // One logical row → 1+ display lines (wrapping); the cursor/selection apply to all
+    // its display lines.
+    let row_lines = |i: usize| -> Vec<Line> {
+        let state = RowState {
+            commented: commented.contains(&i),
+            cursor: app.focus == Focus::Diff && i == app.diff_cursor,
+            selected: selecting && i >= lo && i <= hi,
+        };
+        render_row(&app.visible[i], layout, state)
+    };
+    // Display lines for the logical rows in `range`, in order.
+    let display = |range: std::ops::Range<usize>| -> Vec<Line> {
+        range.flat_map(&row_lines).collect::<Vec<_>>()
     };
 
     let rows = app.visible.len();
     if !app.composing() {
-        let start = app.diff_scroll.min(rows.saturating_sub(height));
-        let end = (start + height).min(rows);
-        frame.render_widget(Paragraph::new((start..end).map(&row_line).collect::<Vec<_>>()), inner);
+        // Fill the pane from `diff_scroll`'s first display line; clamp keeps the cursor in.
+        let mut out = display(app.diff_scroll..rows);
+        out.truncate(height);
+        frame.render_widget(Paragraph::new(out), inner);
         return;
     }
 
-    // Composing: splice the input box in directly under the last selected line, so the
-    // diff lines below it shift down. The diff shares the pane with the box, so clamp the
-    // window top against the reduced diff budget — matching the scroll reserved in the
-    // event loop — rather than the full height.
+    // Composing: splice the input box under the last selected line, in display rows.
     // Cap the box at height-1 so a comment taller than the viewport can't hide its anchor.
     let box_h = composer_height(app).min(height.saturating_sub(1)).max(1);
-    let diff_rows = height - box_h;
-    let start = app.diff_scroll.min(rows.saturating_sub(diff_rows));
-    let last = rows - 1;
-    let anchor = hi.clamp(start, last);
-    let above_n = (anchor + 1 - start).min(diff_rows);
-    let below_start = start + above_n;
-    let below_n = diff_rows - above_n;
+    let diff_budget = height - box_h;
+    let anchor = hi.clamp(app.diff_scroll, rows.saturating_sub(1));
+    let above = display(app.diff_scroll..anchor + 1);
+    // Keep the anchor's last display line just above the box when `above` overflows.
+    let above: Vec<Line> =
+        if above.len() > diff_budget { above[above.len() - diff_budget..].to_vec() } else { above };
+    let remaining = diff_budget - above.len();
+    let mut below = display(anchor + 1..rows);
+    below.truncate(remaining);
+
     let slots = Layout::vertical([
-        Constraint::Length(above_n as u16),
+        Constraint::Length(above.len() as u16),
         Constraint::Length(box_h as u16),
-        Constraint::Length(below_n as u16),
+        Constraint::Length(below.len() as u16),
     ])
     .split(inner);
-
-    if above_n > 0 {
-        frame.render_widget(
-            Paragraph::new((start..start + above_n).map(&row_line).collect::<Vec<_>>()),
-            slots[0],
-        );
+    if !above.is_empty() {
+        frame.render_widget(Paragraph::new(above), slots[0]);
     }
     render_composer(frame, app, slots[1]);
-    if below_n > 0 {
-        let end = (below_start + below_n).min(rows);
-        frame.render_widget(
-            Paragraph::new((below_start..end).map(&row_line).collect::<Vec<_>>()),
-            slots[2],
-        );
+    if !below.is_empty() {
+        frame.render_widget(Paragraph::new(below), slots[2]);
     }
 }
 
@@ -296,6 +318,9 @@ mod cat {
 // Structural diff fills tuned for the dark base; syntax token colors come from the theme.
 const DEL_BG: Color = Color::Rgb(0x3a, 0x27, 0x30);
 const INS_BG: Color = Color::Rgb(0x22, 0x33, 0x2b);
+// Word-emphasis fills — a brighter shade of the row tint over the changed words.
+const EMPH_DEL_BG: Color = Color::Rgb(0x6e, 0x34, 0x46);
+const EMPH_INS_BG: Color = Color::Rgb(0x30, 0x55, 0x3f);
 const CURSOR_BG: Color = cat::SURFACE2;
 const SEL_BG: Color = cat::SURFACE0;
 const FOLD_BG: Color = cat::SURFACE1;
@@ -305,19 +330,47 @@ fn gutter_width(rows: usize) -> usize {
     rows.to_string().len().max(3)
 }
 
-/// One diff row as a full-width line: a left change bar, the line number, then
-/// syntax-colored code, tinted red/green for a change and padded so the row
-/// background fills the pane.
-fn render_row(
-    row: &Row,
+/// The gutter prefix width: the change bar plus the right-aligned line number and a space.
+fn gutter_prefix_width(gutter_w: usize) -> usize {
+    1 + gutter_w + 1
+}
+
+/// How many display rows a row needs: 1 for a fold or with wrap off, else the number of
+/// word-wrapped segments its (tab-expanded) content fills. Shares [`wrap_segments`] with
+/// the renderer so per-row geometry stays aligned with what gets painted.
+fn row_height(row: &Row, gutter_w: usize, width: usize, wrap: bool) -> usize {
+    if !wrap || matches!(row, Row::Fold { .. }) {
+        return 1;
+    }
+    let code_width = width.saturating_sub(gutter_prefix_width(gutter_w)).max(1);
+    wrap_segments(&code_cells(row, false), code_width).len()
+}
+
+/// The diff-pane layout: constant for a frame.
+#[derive(Clone, Copy)]
+struct RowLayout {
     gutter_w: usize,
     width: usize,
+    h_scroll: usize,
+    wrap: bool,
+}
+
+/// A row's per-row highlight state.
+#[derive(Clone, Copy)]
+struct RowState {
     commented: bool,
     cursor: bool,
     selected: bool,
-) -> Line<'static> {
+}
+
+/// A diff row as one or more full-width display lines: a left change bar, the line
+/// number, then syntax-colored code tinted red/green. With wrap on, a long line breaks
+/// into `code_width`-wide rows; a continuation row carries a blank gutter so numbers
+/// stay aligned. With wrap off, the line is one row scrolled by `h_scroll`.
+fn render_row(row: &Row, layout: RowLayout, state: RowState) -> Vec<Line<'static>> {
+    let RowLayout { gutter_w, width, h_scroll, wrap } = layout;
+    let RowState { commented, cursor, selected } = state;
     if let Row::Fold { .. } = row {
-        // Quiet by default; the focused fold reveals its action (the footer also lists `o`).
         let label = if cursor {
             format!("  ⋯  {} unmodified lines — ⏎ expand", row.hidden())
         } else {
@@ -328,7 +381,7 @@ fn render_row(
             line.push_span(Span::raw(" ".repeat(pad)));
         }
         let bg = if cursor { CURSOR_BG } else { FOLD_BG };
-        return line.style(Style::default().bg(bg).add_modifier(Modifier::BOLD));
+        return vec![line.style(Style::default().bg(bg).add_modifier(Modifier::BOLD))];
     }
     let num = row.new_no().or_else(|| row.old_no()).map_or(String::new(), |n| n.to_string());
     let num_color = if commented { cat::YELLOW } else { cat::OVERLAY0 };
@@ -337,23 +390,7 @@ fn render_row(
         '+' => ("▌", cat::GREEN),
         _ => (" ", cat::OVERLAY0),
     };
-
-    // Bar first, at the far left edge, then the line number, then the code.
-    let mut spans = vec![
-        Span::styled(bar, Style::default().fg(bar_color)),
-        Span::styled(format!("{num:>gutter_w$} "), Style::default().fg(num_color)),
-    ];
-    for s in row.spans() {
-        spans.push(Span::styled(s.text.clone(), Style::default().fg(rgb(s.color))));
-    }
-    // Pad to the pane width so the row background fills the line, not just the text.
-    // `Line::width` is display-width aware, so wide (CJK/emoji) glyphs pad correctly.
-    let mut line = Line::from(spans);
-    if let Some(pad) = width.checked_sub(line.width()).filter(|p| *p > 0) {
-        line.push_span(Span::raw(" ".repeat(pad)));
-    }
-
-    let bg = if cursor {
+    let row_bg = if cursor {
         Some(CURSOR_BG)
     } else if selected {
         Some(SEL_BG)
@@ -364,14 +401,183 @@ fn render_row(
             _ => None,
         }
     };
-    match bg {
-        Some(bg) => line.style(Style::default().bg(bg)),
-        None => line,
-    }
+
+    // Word emphasis brightens the changed words, unless the row's fill is a cursor or
+    // selection bg, which wins for readability.
+    let emph_on = !cursor && !selected;
+    let emph_bg = match row.marker() {
+        '-' => EMPH_DEL_BG,
+        '+' => EMPH_INS_BG,
+        _ => INS_BG,
+    };
+    let cells = code_cells(row, emph_on);
+
+    let prefix_w = gutter_prefix_width(gutter_w);
+    let code_width = width.saturating_sub(prefix_w).max(1);
+    // Without wrap the line is one chunk scrolled by `h_scroll`; with wrap, word-wrapped
+    // segments, the first numbered and the rest blank-gutter.
+    let chunks: Vec<&[Cell]> = if wrap {
+        wrap_segments(&cells, code_width).into_iter().map(|(s, e)| &cells[s..e]).collect()
+    } else {
+        vec![cells.get(skip_columns(&cells, h_scroll)..).unwrap_or(&[])]
+    };
+
+    chunks
+        .into_iter()
+        .enumerate()
+        .map(|(k, chunk)| {
+            let gutter = if k == 0 {
+                vec![
+                    Span::styled(bar, Style::default().fg(bar_color)),
+                    Span::styled(format!("{num:>gutter_w$} "), Style::default().fg(num_color)),
+                ]
+            } else {
+                // A continuation row keeps the change bar but blanks the number column.
+                vec![
+                    Span::styled(bar, Style::default().fg(bar_color)),
+                    Span::raw(" ".repeat(prefix_w - 1)),
+                ]
+            };
+            let mut spans = gutter;
+            spans.extend(cells_to_spans(chunk, emph_bg));
+            let mut line = Line::from(spans);
+            if let Some(pad) = width.checked_sub(line.width()).filter(|p| *p > 0) {
+                line.push_span(Span::raw(" ".repeat(pad)));
+            }
+            match row_bg {
+                Some(bg) => line.style(Style::default().bg(bg)),
+                None => line,
+            }
+        })
+        .collect()
 }
 
 fn rgb(c: crate::diff::Rgb) -> Color {
     Color::Rgb(c.0, c.1, c.2)
+}
+
+/// Tabs expand to this many columns.
+const TAB: usize = 4;
+
+/// Greedy word wrap over display cells into half-open ranges, one per display row.
+///
+/// Breaks at the last space that fits within `width`, falling back to a hard break when a
+/// single word is wider than the column. Leading spaces on a continuation are dropped so a
+/// break landing just before a space doesn't leave an almost-empty row. An empty line still
+/// yields one (empty) range so it occupies a row. The renderer and [`row_height`] share this
+/// so what's measured matches what's painted.
+fn wrap_segments(cells: &[Cell], width: usize) -> Vec<(usize, usize)> {
+    if cells.is_empty() {
+        return vec![(0, 0)];
+    }
+    let mut segs = Vec::new();
+    let mut start = 0;
+    while start < cells.len() {
+        // Take as many cells as fit within `width` columns, always at least one (so a glyph
+        // wider than the column still gets its own row rather than stalling).
+        let mut col = 0;
+        let mut limit = start;
+        while limit < cells.len() {
+            let cw = cells[limit].w;
+            if col + cw > width && limit > start {
+                break;
+            }
+            col += cw;
+            limit += 1;
+        }
+        if limit == cells.len() {
+            segs.push((start, cells.len()));
+            break;
+        }
+        // More cells follow; prefer breaking just after the last space that fits.
+        let brk = (start..limit).rev().find(|&i| cells[i].ch == ' ').map(|i| i + 1);
+        let end = brk.filter(|&e| e > start).unwrap_or(limit);
+        segs.push((start, end));
+        start = end;
+        while start < cells.len() && cells[start].ch == ' ' {
+            start += 1;
+        }
+    }
+    segs
+}
+
+/// The first cell index lying at or past `cols` display columns — the no-wrap horizontal
+/// scroll offset, snapping past a wide glyph that straddles the boundary rather than
+/// splitting it.
+fn skip_columns(cells: &[Cell], cols: usize) -> usize {
+    let mut col = 0;
+    let mut i = 0;
+    while i < cells.len() && col < cols {
+        col += cells[i].w;
+        i += 1;
+    }
+    i
+}
+
+/// One display cell of a code line: a glyph, its terminal width in columns (1 for most
+/// text, 2 for wide CJK/emoji, 0 for a combining mark), its syntax color, and whether it
+/// falls in a word-emphasis range.
+struct Cell {
+    ch: char,
+    w: usize,
+    fg: Color,
+    emph: bool,
+}
+
+/// Expand a row's spans into display cells: tabs become spaces to the next tab stop, and
+/// each char carries its column width, color, and (when `emph_on`) its word-emphasis flag.
+/// Width comes from `unicode-width` so wide glyphs measure as the two columns they paint.
+fn code_cells(row: &Row, emph_on: bool) -> Vec<Cell> {
+    let emphasis = if emph_on { row.emphasis() } else { &[] };
+    let in_emph = |i: u32| emphasis.iter().any(|&(a, b)| i >= a && i < b);
+    let mut cells = Vec::new();
+    let mut idx = 0u32;
+    let mut col = 0usize; // display column, so tab stops land right after wide glyphs too
+    for s in row.spans() {
+        let fg = rgb(s.color);
+        for ch in s.text.chars() {
+            let emph = in_emph(idx);
+            if ch == '\t' {
+                for _ in 0..(TAB - col % TAB) {
+                    cells.push(Cell { ch: ' ', w: 1, fg, emph });
+                    col += 1;
+                }
+            } else {
+                let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+                cells.push(Cell { ch, w, fg, emph });
+                col += w;
+            }
+            idx += 1;
+        }
+    }
+    cells
+}
+
+/// Build spans from display cells, merging runs of equal color/emphasis; an emphasized
+/// run takes `emph_bg` as its background.
+fn cells_to_spans(cells: &[Cell], emph_bg: Color) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut buf = String::new();
+    let mut cur: Option<(Color, bool)> = None;
+    for c in cells {
+        let key = (c.fg, c.emph);
+        if cur != Some(key) {
+            if let Some((fg, emph)) = cur {
+                spans.push(cell_span(std::mem::take(&mut buf), fg, emph, emph_bg));
+            }
+            cur = Some(key);
+        }
+        buf.push(c.ch);
+    }
+    if let Some((fg, emph)) = cur {
+        spans.push(cell_span(buf, fg, emph, emph_bg));
+    }
+    spans
+}
+
+fn cell_span(text: String, fg: Color, emph: bool, emph_bg: Color) -> Span<'static> {
+    let style = Style::default().fg(fg);
+    Span::styled(text, if emph { style.bg(emph_bg) } else { style })
 }
 
 /// The inline comment input box, drawn at `area` (under the selection in the diff).

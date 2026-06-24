@@ -49,8 +49,8 @@ Each realized in part; none promotes at this checkpoint. All promote at the merg
 
 Orientation only — each → milestone 2.
 
-- Word `emphasis` and `Row::Fold` + folding (`o`) → milestone 2.
-- `stacked` view + `t`, line wrap + `←`/`→`, `--view` / `--wrap` → milestone 2.
+- Word `emphasis` and `Row::Fold` + folding (`enter`) → milestone 2.
+- Line wrap + `←`/`→` and `--wrap` → milestone 2.
 - The directory-tree file list (`file-list.md`) → milestone 2.
 - `Ctrl+W` delete-word and wrap-aware box growth → milestone 2.
 
@@ -74,7 +74,7 @@ Orientation only — each → milestone 2.
 ## Verification
 
 - **Done:** in a herdr split pane on this repo's changes — open a file, see a Catppuccin-highlighted structured diff with line numbers and change bars and no `+`/`−`; comment, edit, send, and copy all work; it looks beautiful.
-- **Tight:** the diff equals Exit State — no `emphasis`, no `Fold`, no `stacked`/wrap, no tree, no box fixes.
+- **Tight:** the diff equals Exit State — no `emphasis`, no `Fold`, no wrap, no tree, no box fixes.
 - **Invariants upheld:**
   - read-only git (`overview.md`) → grep source: only `show` / `diff` / `status` / `rev-parse` / `merge-base` run.
   - a comment is never lost to a refresh (`review-model.md`) → test: a poll over the new model keeps a saved and an in-progress comment.

@@ -58,6 +58,10 @@ pub struct App {
     /// Top visible diff line. Sticky: only moves to keep the cursor in view, so the
     /// diff does not jump on every cursor step and drag-selection stays stable.
     pub diff_scroll: usize,
+    /// Horizontal scroll, in columns, applied to the diff when wrap is off.
+    pub h_scroll: usize,
+    /// Whether long diff lines wrap (default) or are scrolled horizontally.
+    pub wrap: bool,
     pub select_anchor: Option<usize>,
     pub store: CommentStore,
     pub list_cursor: usize,
@@ -84,6 +88,8 @@ impl App {
             diff_path: None,
             diff_cursor: 0,
             diff_scroll: 0,
+            h_scroll: 0,
+            wrap: true,
             select_anchor: None,
             store: CommentStore::new(),
             list_cursor: 0,
@@ -228,22 +234,50 @@ impl App {
     fn reset_diff_view(&mut self) {
         self.diff_cursor = 0;
         self.diff_scroll = 0;
+        self.h_scroll = 0;
         self.select_anchor = None;
     }
 
-    /// Keep `diff_scroll` so the cursor stays within a `height`-row viewport, scrolling
-    /// only when the cursor would leave it. Called once per frame before drawing.
-    pub fn clamp_diff_scroll(&mut self, height: usize) {
-        if height == 0 || self.visible.is_empty() {
+    /// Scroll the diff horizontally by `delta` columns, clamped at the left edge.
+    pub fn scroll_h(&mut self, delta: isize) {
+        self.h_scroll = if delta >= 0 {
+            self.h_scroll + delta as usize
+        } else {
+            self.h_scroll.saturating_sub(delta.unsigned_abs())
+        };
+    }
+
+    /// Toggle line wrap; reset the horizontal scroll, which only applies with wrap off.
+    pub fn toggle_wrap(&mut self) {
+        self.wrap = !self.wrap;
+        self.h_scroll = 0;
+    }
+
+    /// Keep `diff_scroll` so the cursor's logical row fits in a `viewport`-display-row
+    /// window, scrolling only when it would leave. `heights` is the display height of
+    /// each visible row (1 unless a wrapped line spans several). Called once per frame.
+    pub fn clamp_diff_scroll(&mut self, heights: &[usize], viewport: usize) {
+        if viewport == 0 || self.visible.is_empty() {
             self.diff_scroll = 0;
             return;
         }
-        if self.diff_cursor < self.diff_scroll {
-            self.diff_scroll = self.diff_cursor;
-        } else if self.diff_cursor >= self.diff_scroll + height {
-            self.diff_scroll = self.diff_cursor + 1 - height;
+        let cursor = self.diff_cursor.min(self.visible.len() - 1);
+        if cursor < self.diff_scroll {
+            self.diff_scroll = cursor;
         }
-        self.diff_scroll = self.diff_scroll.min(self.visible.len().saturating_sub(height));
+        // Advance the top until the cursor row's display lines fit in the viewport.
+        while self.diff_scroll < cursor
+            && heights[self.diff_scroll..=cursor].iter().sum::<usize>() > viewport
+        {
+            self.diff_scroll += 1;
+        }
+        // Pull back so the bottom isn't left blank when content could fill it.
+        while self.diff_scroll > 0
+            && self.diff_scroll <= cursor
+            && heights[self.diff_scroll - 1..].iter().sum::<usize>() <= viewport
+        {
+            self.diff_scroll -= 1;
+        }
     }
 
     /// Switch the changeset scope and reload. A no-op while composing, so a comment

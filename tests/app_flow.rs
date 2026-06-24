@@ -54,6 +54,13 @@ fn app_on(r: &Repo) -> App {
     app
 }
 
+/// Clamp the diff scroll with one display row per logical row (no wrap), for tests that
+/// drive short-line diffs.
+fn clamp(app: &mut App, viewport: usize) {
+    let heights = vec![1usize; app.visible.len()];
+    app.clamp_diff_scroll(&heights, viewport);
+}
+
 /// The index of the first diff row with the given marker (`'+'`, `'-'`, or `' '`).
 fn row_with(app: &App, marker: char) -> usize {
     app.diff.rows.iter().position(|r| r.marker() == marker).expect("a row with that marker")
@@ -297,7 +304,7 @@ fn the_composer_reserve_keeps_the_anchored_line_visible() {
     // stay within the narrowed viewport so it renders above the box.
     let viewport = 12;
     let effective = viewport - herdr_review::ui::composer_height(&app);
-    app.clamp_diff_scroll(effective);
+    clamp(&mut app, effective);
     assert!(
         (app.diff_scroll..app.diff_scroll + effective).contains(&app.diff_cursor),
         "anchored line {} stays in the reserved viewport [{}, {})",
@@ -515,27 +522,28 @@ fn the_diff_scroll_is_sticky_and_only_follows_the_cursor_off_screen() {
     app.focus = Focus::Diff;
     let height = 10;
 
-    app.clamp_diff_scroll(height);
+    clamp(&mut app, height);
     assert_eq!(app.diff_scroll, 0);
 
     // Cursor moves but stays in view — the window does not scroll.
     app.diff_cursor = 5;
-    app.clamp_diff_scroll(height);
+    clamp(&mut app, height);
     assert_eq!(app.diff_scroll, 0, "no scroll while the cursor is visible");
 
     // Cursor leaves the bottom — scroll just enough to reveal it, no recentering.
     app.diff_cursor = 12;
-    app.clamp_diff_scroll(height);
+    clamp(&mut app, height);
     assert_eq!(app.diff_scroll, 12 + 1 - height);
 
     // Cursor jumps back above the window — scroll follows up to it.
     app.diff_cursor = 1;
-    app.clamp_diff_scroll(height);
+    clamp(&mut app, height);
     assert_eq!(app.diff_scroll, 1);
 
     // A viewport taller than the whole diff never scrolls.
     app.diff_cursor = 0;
-    app.clamp_diff_scroll(app.diff.rows.len() + 50);
+    let tall = app.visible.len() + 50;
+    clamp(&mut app, tall);
     assert_eq!(app.diff_scroll, 0, "no scroll when the diff fits the viewport");
 }
 
@@ -555,7 +563,7 @@ fn a_refresh_keeps_the_diff_scroll_position() {
     app.reload().unwrap();
     app.focus = Focus::Diff;
     app.diff_cursor = 25;
-    app.clamp_diff_scroll(10);
+    clamp(&mut app, 10);
     let (cursor, scroll) = (app.diff_cursor, app.diff_scroll);
     assert!(scroll > 0, "we scrolled down into the diff");
 

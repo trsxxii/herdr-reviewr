@@ -28,10 +28,13 @@ pub struct Span {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Row {
     Context { old_no: u32, new_no: u32, spans: Vec<Span> },
-    Deletion { old_no: u32, spans: Vec<Span> },
-    Insertion { new_no: u32, spans: Vec<Span> },
+    Deletion { old_no: u32, spans: Vec<Span>, emphasis: Vec<CharRange> },
+    Insertion { new_no: u32, spans: Vec<Span>, emphasis: Vec<CharRange> },
     Fold { lines: Vec<Row> },
 }
+
+/// A `[start, end)` run of char indices within a line, for word-level emphasis.
+pub type CharRange = (u32, u32);
 
 impl Row {
     pub fn old_no(&self) -> Option<u32> {
@@ -54,6 +57,15 @@ impl Row {
             | Row::Deletion { spans, .. }
             | Row::Insertion { spans, .. } => spans,
             Row::Fold { .. } => &[],
+        }
+    }
+
+    /// The char ranges within this line that differ from its paired counterpart; empty
+    /// on context, folds, and unpaired change lines.
+    pub fn emphasis(&self) -> &[CharRange] {
+        match self {
+            Row::Deletion { emphasis, .. } | Row::Insertion { emphasis, .. } => emphasis,
+            Row::Context { .. } | Row::Fold { .. } => &[],
         }
     }
 
@@ -163,18 +175,169 @@ impl FileDiff {
                 }
                 ChangeTag::Delete => {
                     let oi = change.old_index().unwrap();
-                    rows.push(Row::Deletion { old_no: oi as u32 + 1, spans: line(&old_spans, oi) });
+                    rows.push(Row::Deletion {
+                        old_no: oi as u32 + 1,
+                        spans: line(&old_spans, oi),
+                        emphasis: Vec::new(),
+                    });
                 }
                 ChangeTag::Insert => {
                     let ni = change.new_index().unwrap();
                     rows.push(Row::Insertion {
                         new_no: ni as u32 + 1,
                         spans: line(&new_spans, ni),
+                        emphasis: Vec::new(),
                     });
                 }
             }
         }
+        compute_emphasis(&mut rows);
         Self { path, language, state: FileState::Normal, rows: collapse_context(&rows) }
+    }
+}
+
+/// Fill word-level `emphasis` on the related deletion/insertion lines of each change block
+/// (a run of deletions immediately followed by a run of insertions). Rather than pairing by
+/// position — which mis-pairs unrelated lines when a block rewrites several lines at once —
+/// each deletion greedily searches forward for its *homolog*: the first not-yet-claimed
+/// insertion similar enough to be the same line edited (see [`pair_homologs`], after
+/// git-delta's `infer_edits`). Lines with no homolog stay unemphasized, carrying only their
+/// red/green; emphasis then points at a real edit instead of flooding a wholesale rewrite.
+fn compute_emphasis(rows: &mut [Row]) {
+    let mut i = 0;
+    while i < rows.len() {
+        let del_start = i;
+        while i < rows.len() && matches!(rows[i], Row::Deletion { .. }) {
+            i += 1;
+        }
+        let ins_start = i;
+        while i < rows.len() && matches!(rows[i], Row::Insertion { .. }) {
+            i += 1;
+        }
+        pair_homologs(rows, del_start..ins_start, ins_start..i);
+        // No change block started here; step over the context/fold row.
+        if del_start == i {
+            i += 1;
+        }
+    }
+}
+
+/// Pair each deletion in `dels` with its homolog insertion in `inss` and set both lines'
+/// emphasis. Greedy forward scan: deletion `d` takes the first insertion at or after the
+/// last-claimed one whose similarity clears [`MIN_SIMILARITY`]; insertions skipped along the
+/// way are abandoned (they were inserts, not edits of `d`). A deletion with no qualifying
+/// insertion is left unpaired. Mirrors git-delta's homolog inference.
+fn pair_homologs(rows: &mut [Row], dels: std::ops::Range<usize>, inss: std::ops::Range<usize>) {
+    let mut next_ins = inss.start;
+    for d in dels {
+        let old = rows[d].text();
+        let mut p = next_ins;
+        while p < inss.end {
+            let new = rows[p].text();
+            let (ratio, old_e, new_e) = word_emphasis(&old, &new);
+            if ratio >= MIN_SIMILARITY {
+                if let Row::Deletion { emphasis, .. } = &mut rows[d] {
+                    *emphasis = old_e;
+                }
+                if let Row::Insertion { emphasis, .. } = &mut rows[p] {
+                    *emphasis = new_e;
+                }
+                next_ins = p + 1;
+                break;
+            }
+            p += 1;
+        }
+    }
+}
+
+/// Two lines below this similarity are taken to be different lines, not one line edited, so
+/// they are never paired for inline emphasis (see [`pair_homologs`]). git-delta's equivalent
+/// `max_line_distance` defaults to 0.6 *distance* — the complementary metric — but we sit
+/// stricter because over-highlighting a rewrite is worse than missing a marginal edit: a pair
+/// that only shares a syntactic skeleton (a reformat, or two different `let`s) scatters
+/// unhelpful fragments. Empirically marginal pairs land near ~0.6–0.65 and genuine edits near
+/// ~0.71–0.78, so the bar sits in the gap.
+const MIN_SIMILARITY: f32 = 0.7;
+
+/// The word-level similarity of `(old, new)` and the char ranges that changed: the words
+/// present only in `old` (deletion emphasis) and only in `new` (insertion emphasis). The
+/// caller gates on the ratio (see [`pair_homologs`]); the ranges are meaningful only once it
+/// clears the bar. Adjacent changed words separated only by whitespace coalesce into one
+/// block (see [`coalesce_ws_gaps`]), so a changed phrase reads as a single span, not fragments.
+fn word_emphasis(old: &str, new: &str) -> (f32, Vec<CharRange>, Vec<CharRange>) {
+    let diff = TextDiff::from_words(old, new);
+    let (mut old_ranges, mut new_ranges) = (Vec::new(), Vec::new());
+    let (mut old_pos, mut new_pos) = (0u32, 0u32);
+    for change in diff.iter_all_changes() {
+        let len = change.value().chars().count() as u32;
+        match change.tag() {
+            ChangeTag::Equal => {
+                old_pos += len;
+                new_pos += len;
+            }
+            ChangeTag::Delete => {
+                push_range(&mut old_ranges, old_pos, len);
+                old_pos += len;
+            }
+            ChangeTag::Insert => {
+                push_range(&mut new_ranges, new_pos, len);
+                new_pos += len;
+            }
+        }
+    }
+    let old_e = trim_range_edges(coalesce_ws_gaps(old_ranges, old), old);
+    let new_e = trim_range_edges(coalesce_ws_gaps(new_ranges, new), new);
+    (diff.ratio(), old_e, new_e)
+}
+
+/// Shrink each emphasis range off its leading and trailing whitespace, dropping any range
+/// that is all whitespace. So a highlight hugs the changed tokens — never bare indentation
+/// (a reformat that only deepened the indent) and never the space before an added trailing
+/// comment. Interior whitespace from [`coalesce_ws_gaps`] survives, since it is not an edge.
+fn trim_range_edges(ranges: Vec<CharRange>, text: &str) -> Vec<CharRange> {
+    let chars: Vec<char> = text.chars().collect();
+    ranges
+        .into_iter()
+        .filter_map(|(mut a, mut b)| {
+            while a < b && chars[a as usize].is_whitespace() {
+                a += 1;
+            }
+            while b > a && chars[b as usize - 1].is_whitespace() {
+                b -= 1;
+            }
+            (a < b).then_some((a, b))
+        })
+        .collect()
+}
+
+/// Merge consecutive emphasis ranges whose in-between text is all whitespace, swallowing
+/// that whitespace into the highlight. A run of changed words then shows as one block
+/// rather than separate words with bare gaps; leading and trailing indentation, and gaps
+/// holding any non-space character, are left out because they never sit between two changes.
+fn coalesce_ws_gaps(ranges: Vec<CharRange>, text: &str) -> Vec<CharRange> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out: Vec<CharRange> = Vec::new();
+    for (start, end) in ranges {
+        match out.last_mut() {
+            Some(last)
+                if chars[last.1 as usize..start as usize].iter().all(|c| c.is_whitespace()) =>
+            {
+                last.1 = end;
+            }
+            _ => out.push((start, end)),
+        }
+    }
+    out
+}
+
+/// Append `[pos, pos+len)`, merging into the previous range when they touch.
+fn push_range(ranges: &mut Vec<CharRange>, pos: u32, len: u32) {
+    if len == 0 {
+        return;
+    }
+    match ranges.last_mut() {
+        Some(last) if last.1 == pos => last.1 = pos + len,
+        _ => ranges.push((pos, pos + len)),
     }
 }
 
@@ -305,6 +468,122 @@ mod tests {
         assert_eq!(folds, 2, "leading and trailing runs fold");
         let change = d.rows.iter().find(|r| matches!(r, Row::Insertion { .. })).unwrap();
         assert_eq!(change.new_no(), Some(21)); // line 20 is 1-based line 21
+    }
+
+    #[test]
+    fn word_emphasis_marks_only_the_changed_words() {
+        let d = build("let x = foo(a);\n", "let x = bar(a, b);\n");
+        let del = d.rows.iter().find(|r| matches!(r, Row::Deletion { .. })).unwrap();
+        let ins = d.rows.iter().find(|r| matches!(r, Row::Insertion { .. })).unwrap();
+        // Both lines share the `let x = ` and `(a` prefix; `foo`→`bar` and the `, b` are
+        // the only emphasized spans, never the whole line.
+        assert!(!del.emphasis().is_empty() && !ins.emphasis().is_empty());
+        let covers = |row: &Row, needle: &str| {
+            let text = row.text();
+            row.emphasis().iter().any(|&(a, b)| {
+                let seg: String = text.chars().skip(a as usize).take((b - a) as usize).collect();
+                seg.contains(needle)
+            })
+        };
+        assert!(covers(del, "foo"), "deletion emphasizes the removed word");
+        assert!(covers(ins, "bar"), "insertion emphasizes the new word");
+        // `let x = ` is shared, so it is never emphasized.
+        assert!(!covers(del, "let"));
+    }
+
+    #[test]
+    fn adjacent_changed_words_coalesce_across_whitespace() {
+        // `Hi You` → `Hello There`: two changed words split by a space. The emphasis is a
+        // single block spanning the space, not two fragments — the Word-Alt look.
+        let d = build("greet Hi You here\n", "greet Hello There here\n");
+        let del = d.rows.iter().find(|r| matches!(r, Row::Deletion { .. })).unwrap();
+        let ins = d.rows.iter().find(|r| matches!(r, Row::Insertion { .. })).unwrap();
+        let seg = |row: &Row, &(a, b): &(u32, u32)| -> String {
+            row.text().chars().skip(a as usize).take((b - a) as usize).collect()
+        };
+        assert_eq!(del.emphasis().len(), 1, "the removed phrase is one block");
+        assert_eq!(seg(del, &del.emphasis()[0]), "Hi You");
+        assert_eq!(ins.emphasis().len(), 1, "the new phrase is one block");
+        assert_eq!(seg(ins, &ins.emphasis()[0]), "Hello There");
+    }
+
+    #[test]
+    fn emphasis_pairs_a_deletion_with_its_homolog_not_its_position() {
+        // One line edited, with a new line inserted above it. Positional pairing would pair
+        // the deletion with the inserted comment (dissimilar → nothing); homolog search skips
+        // the comment and pairs with the real edit, so `compute`→`computeSum` lights up and
+        // the unrelated inserted line stays plain.
+        let d = build("let total = compute();\n", "// added\nlet total = computeSum();\n");
+        let seg = |row: &Row| -> String {
+            let (a, b) = row.emphasis()[0];
+            row.text().chars().skip(a as usize).take((b - a) as usize).collect()
+        };
+        let del = d.rows.iter().find(|r| matches!(r, Row::Deletion { .. })).unwrap();
+        let comment = d.rows.iter().find(|r| r.text() == "// added").unwrap();
+        let edited = d.rows.iter().find(|r| r.text() == "let total = computeSum();").unwrap();
+        assert_eq!(seg(del), "compute();", "the deletion emphasizes its real edit");
+        assert_eq!(seg(edited), "computeSum();", "its homolog insertion is the one emphasized");
+        assert!(comment.emphasis().is_empty(), "the unrelated inserted line stays plain");
+    }
+
+    #[test]
+    fn emphasis_hugs_the_tokens_not_surrounding_whitespace() {
+        // Adding a trailing comment: the highlight is `// note`, not ` // note` — leading
+        // whitespace is trimmed off the range so it never paints bare spaces.
+        let d = build("    let x = 1;\n", "    let x = 1; // note\n");
+        let ins = d.rows.iter().find(|r| matches!(r, Row::Insertion { .. })).unwrap();
+        assert_eq!(ins.emphasis().len(), 1);
+        let (a, b) = ins.emphasis()[0];
+        let seg: String = ins.text().chars().skip(a as usize).take((b - a) as usize).collect();
+        assert_eq!(seg, "// note", "emphasis hugs the comment, no leading space");
+    }
+
+    #[test]
+    fn a_reformat_or_unrelated_pair_is_not_emphasized() {
+        // A one-liner reformatted to multi-line, and two different statements sharing a
+        // `let … ;` skeleton, both fall below the similarity bar — they scatter unhelpful
+        // fragments otherwise. Each keeps only its line-level red/green.
+        let reformat = build(
+            "    rows.push(Row::Deletion { old_no: oi + 1, spans: s });\n",
+            "    rows.push(Row::Deletion {\n        old_no: oi + 1,\n        spans: s,\n    });\n",
+        );
+        let unrelated = build(
+            "    let start = scroll.min(len.sub(height));\n",
+            "    let target = (row - inner.y) as usize;\n",
+        );
+        for d in [reformat, unrelated] {
+            assert!(
+                d.rows.iter().all(|r| r.emphasis().is_empty()),
+                "no inline emphasis on a sub-threshold pair"
+            );
+        }
+    }
+
+    #[test]
+    fn a_wholesale_line_rewrite_gets_no_word_emphasis() {
+        // Two unrelated lines that merely share `///` and punctuation must not light up:
+        // the line-level red/green already says they changed, and full-line emphasis on a
+        // dissimilar pair is noise. The similarity gate suppresses it.
+        let d = build(
+            "/// Keep diff_scroll so the cursor stays within the viewport\n",
+            "/// Scroll the diff horizontally by delta columns\n",
+        );
+        let del = d.rows.iter().find(|r| matches!(r, Row::Deletion { .. })).unwrap();
+        let ins = d.rows.iter().find(|r| matches!(r, Row::Insertion { .. })).unwrap();
+        assert!(del.emphasis().is_empty(), "dissimilar deletion is not emphasized");
+        assert!(ins.emphasis().is_empty(), "dissimilar insertion is not emphasized");
+    }
+
+    #[test]
+    fn an_unpaired_change_line_has_no_emphasis() {
+        // One deletion, two insertions: line 0 pairs; the extra insertion stays plain.
+        let d = build("alpha\n", "ALPHA\nbeta\n");
+        let extra = d
+            .rows
+            .iter()
+            .find(|r| matches!(r, Row::Insertion { .. }) && r.text() == "beta")
+            .unwrap();
+        assert!(extra.emphasis().is_empty(), "the unpaired insertion is not emphasized");
     }
 
     #[test]

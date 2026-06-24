@@ -49,7 +49,6 @@ Every action has a keyboard binding. The mouse-relevant ones also work by click 
 | scroll the diff horizontally, when wrap is off | `←` / `→` | — |
 | switch scope | `u` uncommitted / `b` branch | click the scope in the header |
 | expand the fold under the cursor | `enter` | click the `⋯` fold row |
-| toggle unified / stacked view | `t` | — |
 | toggle line wrap | `w` | — |
 | select a line range, removed lines included | `v` then move | click-drag in the diff |
 | comment on the selection | `c`, type, `enter` | after a drag-select |
@@ -83,7 +82,7 @@ Writing a comment: select a range or land on a line, press `c`, and an input box
 ## Non-goals
 
 - No editing, staging, or committing from the UI — review and comment only.
-- No side-by-side split view — roadmap; `diff-view.md` ships unified and stacked.
+- No side-by-side split view — the diff is one unified column; split is roadmap.
 
 ## Decisions
 

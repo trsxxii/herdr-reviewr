@@ -40,6 +40,7 @@ Named so the architecture stays open to them. None is part of this design.
 - A `Checks` tab showing PR status and CI via `gh`, plus an aggregated comment list.
 - A `last-turn` scope that diffs only the latest agent turn.
 - Reviewed-file state — marking a file reviewed and greying it in the list.
+- A side-by-side split diff view, for wide panes.
 - Search within the diff, and live theme switching.
 
 ## Invariants
