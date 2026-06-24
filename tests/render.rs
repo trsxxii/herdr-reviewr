@@ -81,6 +81,28 @@ fn the_file_list_renders_as_a_directory_tree() {
 }
 
 #[test]
+fn a_saved_comment_renders_inline_as_a_card() {
+    let r = Repo::init();
+    r.write("a.rs", "alpha\nbeta\n");
+    r.commit_all("init");
+    r.write("a.rs", "alpha\nBETA\n");
+    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    app.reload().unwrap();
+
+    app.focus = Focus::Diff;
+    app.diff_cursor = app.visible.iter().position(|row| row.marker() == '+').unwrap();
+    app.start_comment();
+    for ch in "memoize this".chars() {
+        app.input_push(ch);
+    }
+    app.submit_comment(); // box closes, comment saved
+
+    let out = render(&app);
+    assert!(out.contains("memoize this"), "the saved comment stays visible inline: {out:?}");
+    assert!(out.contains("comment ·"), "the inline card is titled with the location");
+}
+
+#[test]
 fn a_renamed_file_shows_old_arrow_new_in_the_header() {
     let r = Repo::init();
     r.write("old_name.rs", "stable contents that survive the move\nplus a second line\n");

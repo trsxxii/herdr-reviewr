@@ -65,7 +65,9 @@ Every action has a keyboard binding. The mouse-relevant ones also work by click 
 | refresh now | `r` | — |
 | quit | `q` | — |
 
-Writing a comment: select a range or land on a line, press `c`, and an input box opens **inline under the last selected line**. Type — `Alt+Enter` / `Shift+Enter` / `Ctrl+J` inserts a newline, `Ctrl+W` deletes the previous word — then `enter` saves or `esc` cancels. The box grows to fit the text as it wraps to the box width, not only on explicit newlines. `e` reopens the comment under the cursor to edit its text in place. There is no single-vs-all choice: `s` / `S` (or the `Send` button) sends every written comment, and a successful send reports a transient status such as `sent 3 comments`.
+Writing a comment: select a range or land on a line, press `c`, and an input box opens **inline under the last selected line**. Type — `Alt+Enter` / `Shift+Enter` / `Ctrl+J` inserts a newline, `Ctrl+W` deletes the previous word — then `enter` saves or `esc` cancels. The box grows to fit the text as it wraps to the box width, not only on explicit newlines.
+
+On save the input box closes and the comment stays visible: it renders as a **read-only card spliced inline under its line**, titled with its location, so written feedback is always on screen while reviewing rather than hidden behind a marker. `e` reopens the card under the cursor as an edit box in place (its card is hidden while editing); `d` deletes it. There is no single-vs-all choice: `s` / `S` (or the `Send` button) sends every written comment, and a successful send reports a transient status such as `sent 3 comments` that fades after a few seconds.
 
 ### Refresh
 

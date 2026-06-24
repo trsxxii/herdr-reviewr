@@ -61,10 +61,25 @@ pub fn run() -> Result<()> {
     result
 }
 
+/// A transient status message (e.g. "sent 3 comments") fades after this long idle.
+const STATUS_TTL: Duration = Duration::from_secs(4);
+
 /// Draw, then wait up to the poll deadline for input; refresh on each tick.
 fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, poll: Duration) -> Result<()> {
     let mut last_poll = Instant::now();
+    let mut status_at = Instant::now();
+    let mut last_status = String::new();
     while !app.should_quit {
+        // Expire a stale status line: restart the timer when the message changes, and clear
+        // it once it has lingered past the TTL, so a notification doesn't stay up forever.
+        if app.status != last_status {
+            last_status.clone_from(&app.status);
+            status_at = Instant::now();
+        }
+        if !app.status.is_empty() && status_at.elapsed() >= STATUS_TTL {
+            app.status.clear();
+            last_status.clear();
+        }
         // Settle the sticky scroll for this frame's viewport before painting, so the
         // diff window matches what mouse hit-testing will map against. While composing,
         // reserve the inline box's rows so the anchored line stays visible above it.
@@ -79,7 +94,13 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, poll: Duration) -> 
         };
         app.clamp_diff_scroll(&ui::diff_row_heights(app, area), effective);
         terminal.draw(|f| ui::render(f, app))?;
-        let timeout = poll.saturating_sub(last_poll.elapsed());
+        // Wake at the status-expiry boundary too, so it clears on time when idle.
+        let poll_left = poll.saturating_sub(last_poll.elapsed());
+        let timeout = if app.status.is_empty() {
+            poll_left
+        } else {
+            poll_left.min(STATUS_TTL.saturating_sub(status_at.elapsed()))
+        };
         if event::poll(timeout)? {
             match event::read()? {
                 Event::Key(k) if k.kind == KeyEventKind::Press => {

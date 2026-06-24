@@ -18,7 +18,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::app::{App, Focus, Mode};
 use crate::diff::{FileState, Row};
 use crate::file_list::RowKind;
-use crate::model::ChangeKind;
+use crate::model::{ChangeKind, Comment};
 
 pub fn render(frame: &mut Frame, app: &App) {
     let area = frame.area();
@@ -136,7 +136,34 @@ pub fn diff_row_heights(app: &App, area: Rect) -> Vec<usize> {
     let total_lines: usize =
         app.diff.rows.iter().map(|r| if r.is_content() { 1 } else { r.hidden() }).sum();
     let gutter_w = gutter_width(total_lines);
-    app.visible.iter().map(|r| row_height(r, gutter_w, width, app.wrap)).collect()
+    // A row's display height is its wrapped code lines plus any inline comment cards under
+    // it (excluding a card whose comment is being edited), so scroll-clamping and hit-testing
+    // match what the renderer paints.
+    let cards = app.comment_cards();
+    let editing = editing_comment(app);
+    app.visible
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let base = row_height(r, gutter_w, width, app.wrap);
+            let card: usize = cards[i]
+                .iter()
+                .filter(|&&ci| Some(ci) != editing)
+                .filter_map(|&ci| app.store.get(ci))
+                .map(|c| comment_card_lines(c, width).len())
+                .sum();
+            base + card
+        })
+        .collect()
+}
+
+/// The store index of the comment currently being edited, whose inline card is hidden in
+/// favor of its edit box; `None` when not editing.
+fn editing_comment(app: &App) -> Option<usize> {
+    match app.mode {
+        Mode::Composing { editing } => editing,
+        _ => None,
+    }
 }
 
 /// Rows the inline comment box occupies at the diff pane's `width`: the wrapped body height
@@ -389,6 +416,65 @@ fn elide_head(name: &str, max: usize) -> String {
     format!("…{tail}")
 }
 
+/// A saved comment as inline display lines: a quiet box titled with the comment's location
+/// (in the comment-yellow accent) holding its wrapped text. Spliced read-only under the
+/// commented line so a submitted comment stays visible while reviewing.
+fn comment_card_lines(c: &Comment, width: usize) -> Vec<Line<'static>> {
+    const INDENT: usize = 2;
+    let box_w = width.saturating_sub(INDENT).max(10);
+    let text_w = box_w.saturating_sub(4).max(1); // inside "│ " … " │"
+    let border = Style::default().fg(cat::OVERLAY0);
+    let title = Style::default().fg(cat::YELLOW).add_modifier(Modifier::BOLD);
+    let body_style = Style::default().fg(cat::TEXT);
+    let pad = || Span::raw(" ".repeat(INDENT));
+
+    let label = truncate_width(&format!(" comment · {} ", c.location()), box_w.saturating_sub(3));
+    let fill = box_w.saturating_sub(3 + label.width());
+    let mut lines = vec![Line::from(vec![
+        pad(),
+        Span::styled("╭─", border),
+        Span::styled(label, title),
+        Span::styled(format!("{}╮", "─".repeat(fill)), border),
+    ])];
+
+    for logical in c.text.split('\n') {
+        for piece in wrap_text(logical, text_w) {
+            let gap = " ".repeat(text_w.saturating_sub(piece.width()));
+            lines.push(Line::from(vec![
+                pad(),
+                Span::styled("│ ", border),
+                Span::styled(piece, body_style),
+                Span::styled(format!("{gap} │"), border),
+            ]));
+        }
+    }
+
+    lines.push(Line::from(vec![
+        pad(),
+        Span::styled(format!("╰{}╯", "─".repeat(box_w.saturating_sub(2))), border),
+    ]));
+    lines
+}
+
+/// Truncate `s` to `max` display columns, marking a cut with a trailing `…`.
+fn truncate_width(s: &str, max: usize) -> String {
+    if s.width() <= max {
+        return s.to_string();
+    }
+    let mut out = String::new();
+    let mut w = 0;
+    for ch in s.chars() {
+        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if w + cw > max.saturating_sub(1) {
+            break;
+        }
+        out.push(ch);
+        w += cw;
+    }
+    out.push('…');
+    out
+}
+
 fn render_diff_view(frame: &mut Frame, app: &App, area: Rect) {
     let title = match (&app.diff_path, &app.diff.previous_path) {
         (Some(new), Some(old)) => format!("{old} → {new}"),
@@ -421,18 +507,29 @@ fn render_diff_view(frame: &mut Frame, app: &App, area: Rect) {
     let gutter_w = gutter_width(total_lines);
     let layout = RowLayout { gutter_w, width, h_scroll: app.h_scroll, wrap: app.wrap };
     let commented = app.commented_lines();
+    let cards = app.comment_cards();
+    let editing = editing_comment(app);
     let (lo, hi) = app.selection_range();
     let selecting = app.focus == Focus::Diff && app.select_anchor.is_some();
 
-    // One logical row → 1+ display lines (wrapping); the cursor/selection apply to all
-    // its display lines.
+    // One logical row → its 1+ wrapped display lines, then any saved-comment cards anchored
+    // to it. The cursor/selection apply to the code line's display rows, not the cards. The
+    // card of a comment being edited is hidden — its edit box stands in for it.
     let row_lines = |i: usize| -> Vec<Line> {
         let state = RowState {
             commented: commented.contains(&i),
             cursor: app.focus == Focus::Diff && i == app.diff_cursor,
             selected: selecting && i >= lo && i <= hi,
         };
-        render_row(&app.visible[i], layout, state)
+        let mut lines = render_row(&app.visible[i], layout, state);
+        for &ci in &cards[i] {
+            if Some(ci) != editing
+                && let Some(c) = app.store.get(ci)
+            {
+                lines.extend(comment_card_lines(c, width));
+            }
+        }
+        lines
     };
     // Display lines for the logical rows in `range`, in order.
     let display = |range: std::ops::Range<usize>| -> Vec<Line> {

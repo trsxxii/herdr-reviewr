@@ -699,6 +699,22 @@ impl App {
             .collect()
     }
 
+    /// For each visible diff row, the store indices of comments whose card renders after it.
+    /// A comment's card sits under the last visible row its line range covers, so the renderer
+    /// can splice it inline (always visible) and the geometry stays anchored to a real row.
+    pub fn comment_cards(&self) -> Vec<Vec<usize>> {
+        let mut cards = vec![Vec::new(); self.visible.len()];
+        let Some(file) = self.diff_path.as_deref() else { return cards };
+        for (ci, c) in self.store.iter().enumerate() {
+            if c.file == file
+                && let Some(last) = self.visible.iter().rposition(|row| line_in(c, row))
+            {
+                cards[last].push(ci);
+            }
+        }
+        cards
+    }
+
     /// The store index to act on: the comment under the diff cursor, or — in the
     /// list overlay — the highlighted row.
     fn target_comment(&self) -> Option<usize> {
