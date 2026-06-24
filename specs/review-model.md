@@ -1,7 +1,7 @@
 ---
-Status: Current
+Status: Draft
 Created: 2026-06-23
-Last edited: 2026-06-23
+Last edited: 2026-06-24
 ---
 
 # Review model
@@ -64,7 +64,7 @@ scripts/old_runner.py                 D   -47
 
 ### Diff
 
-For the selected file in the current scope, the unified diff text from git. An untracked file shows as an all-additions diff against an empty file. A binary file appears in the list but its pane reads `binary — no line comments`. The diff is what comment anchors and snippets come from.
+For the selected file in the current scope, a structured diff built from the file's old and new content, defined in `diff-view.md`. It is what comment anchors and snippets come from: a comment's `lines` snippet is reconstructed from the rows it covers. An untracked file diffs against empty old content; a binary file appears in the list but its pane reads `binary — no line comments`.
 
 ## Behavior
 
@@ -143,5 +143,6 @@ Export is the only side effect, and comments are in-memory.
 
 ## Related specs
 
+- `./diff-view.md`
 - `./tui.md`
 - `./herdr-host.md`

@@ -97,6 +97,28 @@ fn range(repo: &Path, scope: Scope, base: Option<&str>) -> Option<String> {
     }
 }
 
+/// The merge-base commit of `base` and `HEAD`, the old side of a branch-scope diff.
+pub fn merge_base(repo: &Path, base: Option<&str>) -> Option<String> {
+    let base = base_ref(repo, base)?;
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["merge-base", &base, "HEAD"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let mb = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!mb.is_empty()).then_some(mb)
+}
+
+/// The content of `path` at `rev` (`git show <rev>:<path>`). Empty when the path does
+/// not exist at that rev — an added file against its old side, say.
+pub fn file_content(repo: &Path, rev: &str, path: &str) -> String {
+    git_lenient(repo, &["show", &format!("{rev}:{path}")])
+}
+
 /// The changed files for `scope`, sorted by path. `base` overrides the branch base ref.
 pub fn changed_files(repo: &Path, scope: Scope, base: Option<&str>) -> Result<Vec<ChangedFile>> {
     let (numstat, name_status) = match scope {
@@ -158,26 +180,6 @@ fn untracked_additions(repo: &Path, path: &str) -> u32 {
     ns.lines().next().and_then(|l| l.split('\t').next()).and_then(|a| a.parse().ok()).unwrap_or(0)
 }
 
-/// The unified diff for one file in `scope`. `base` overrides the branch base ref.
-pub fn file_diff(
-    repo: &Path,
-    scope: Scope,
-    path: &str,
-    untracked: bool,
-    base: Option<&str>,
-) -> Result<String> {
-    if untracked {
-        return Ok(git_lenient(repo, &["diff", "--no-index", "--", "/dev/null", path]));
-    }
-    match scope {
-        Scope::Uncommitted => git(repo, &["diff", "HEAD", "--", path]),
-        Scope::Branch => match range(repo, scope, base) {
-            Some(r) => git(repo, &["diff", &r, "--", path]),
-            None => Ok(String::new()),
-        },
-    }
-}
-
 // --- pure parsers (unit-tested without a repo) ---------------------------------
 
 /// Map of path to `(additions, deletions)` from `git diff --numstat`.
@@ -217,86 +219,9 @@ fn parse_name_status(out: &str) -> Vec<(ChangeKind, String)> {
     rows
 }
 
-/// A parsed diff line, with its side line numbers for anchoring comments.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum DiffLineKind {
-    Meta,
-    Hunk,
-    Context,
-    Added,
-    Removed,
-}
-
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct DiffLine {
-    pub kind: DiffLineKind,
-    pub old_no: Option<u32>,
-    pub new_no: Option<u32>,
-    pub text: String,
-}
-
-/// Parse a unified diff into rows carrying old/new line numbers.
-pub fn parse_diff(diff: &str) -> Vec<DiffLine> {
-    let mut rows = Vec::new();
-    let mut old_no = 0u32;
-    let mut new_no = 0u32;
-    for raw in diff.lines() {
-        if let Some((old, new)) = parse_hunk_header(raw) {
-            old_no = old;
-            new_no = new;
-            rows.push(line(DiffLineKind::Hunk, None, None, raw));
-        } else if is_meta(raw) {
-            rows.push(line(DiffLineKind::Meta, None, None, raw));
-        } else if raw.starts_with('+') {
-            rows.push(line(DiffLineKind::Added, None, Some(new_no), raw));
-            new_no += 1;
-        } else if raw.starts_with('-') {
-            rows.push(line(DiffLineKind::Removed, Some(old_no), None, raw));
-            old_no += 1;
-        } else {
-            rows.push(line(DiffLineKind::Context, Some(old_no), Some(new_no), raw));
-            old_no += 1;
-            new_no += 1;
-        }
-    }
-    rows
-}
-
-fn line(kind: DiffLineKind, old_no: Option<u32>, new_no: Option<u32>, text: &str) -> DiffLine {
-    DiffLine { kind, old_no, new_no, text: text.to_string() }
-}
-
-fn is_meta(raw: &str) -> bool {
-    const PREFIXES: [&str; 9] = [
-        "diff ",
-        "index ",
-        "+++",
-        "---",
-        "new file",
-        "deleted file",
-        "rename ",
-        "similarity ",
-        "Binary ",
-    ];
-    PREFIXES.iter().any(|p| raw.starts_with(p))
-}
-
-/// Old and new starting line numbers from a `@@ -a,b +c,d @@` header.
-fn parse_hunk_header(raw: &str) -> Option<(u32, u32)> {
-    let body = raw.strip_prefix("@@ ")?.split(" @@").next()?;
-    let mut parts = body.split(' ');
-    let old = parts.next()?.strip_prefix('-')?;
-    let new = parts.next()?.strip_prefix('+')?;
-    let old_start = old.split(',').next()?.parse().ok()?;
-    let new_start = new.split(',').next()?.parse().ok()?;
-    Some((old_start, new_start))
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        ChangeKind, DiffLineKind, parse_diff, parse_hunk_header, parse_name_status, parse_numstat,
-    };
+    use super::{ChangeKind, parse_name_status, parse_numstat};
 
     #[test]
     fn numstat_parses_counts_and_ignores_binary() {
@@ -313,41 +238,5 @@ mod tests {
         assert_eq!(rows[1], (ChangeKind::Added, "src/b.rs".to_string()));
         assert_eq!(rows[2], (ChangeKind::Deleted, "src/c.rs".to_string()));
         assert_eq!(rows[3], (ChangeKind::Renamed, "new.rs".to_string()));
-    }
-
-    #[test]
-    fn hunk_header_line_numbers() {
-        assert_eq!(parse_hunk_header("@@ -40,7 +40,18 @@ fn x()"), Some((40, 40)));
-        assert_eq!(parse_hunk_header("@@ -1 +1,2 @@"), Some((1, 1)));
-        assert_eq!(parse_hunk_header("context line"), None);
-    }
-
-    #[test]
-    fn diff_tracks_sides_and_line_numbers() {
-        let diff = "\
-diff --git a/x b/x
-@@ -40,2 +40,2 @@
- ctx
--from .z import w
-+from .x import y
-";
-        let rows = parse_diff(diff);
-        let kinds: Vec<_> = rows.iter().map(|r| r.kind).collect();
-        assert_eq!(
-            kinds,
-            vec![
-                DiffLineKind::Meta,
-                DiffLineKind::Hunk,
-                DiffLineKind::Context,
-                DiffLineKind::Removed,
-                DiffLineKind::Added,
-            ]
-        );
-        // context is line 40 on both sides
-        assert_eq!(rows[2].old_no, Some(40));
-        assert_eq!(rows[2].new_no, Some(40));
-        // removed line is old-side 41, added line is new-side 41
-        assert_eq!(rows[3].old_no, Some(41));
-        assert_eq!(rows[4].new_no, Some(41));
     }
 }

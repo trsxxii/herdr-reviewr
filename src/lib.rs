@@ -10,9 +10,11 @@
 
 pub mod app;
 pub mod config;
+pub mod diff;
 pub mod export;
 pub mod git;
 pub mod herdr;
+pub mod highlight;
 #[macro_use]
 pub mod log;
 pub mod model;
@@ -44,6 +46,7 @@ pub fn run() -> Result<()> {
     let repo = git::toplevel(&cfg.repo).unwrap_or_else(|| cfg.repo.clone());
     logln!("start repo={} poll={:?} base={:?}", repo.display(), cfg.poll, cfg.base);
     let mut app = App::new(repo, Scope::Uncommitted, cfg.base.clone());
+    app.set_theme(cfg.theme.as_deref());
     app.reload()?;
 
     let mut terminal = ratatui::init();
@@ -179,6 +182,9 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
         (Char('q'), _) => app.should_quit = true,
         (Char('r'), _) => app.reload()?,
         (Tab, _) => app.toggle_focus(),
+        // In the diff, `enter` expands a fold under the cursor; from the file list it
+        // drops focus into the diff.
+        (Enter, _) if app.focus == Focus::Diff => app.expand_fold(),
         (Enter, _) => app.focus = Focus::Diff,
         (Char('j') | Down, _) => app.move_cursor(1)?,
         (Char('k') | Up, _) => app.move_cursor(-1)?,
@@ -214,15 +220,18 @@ fn handle_mouse(app: &mut App, m: MouseEvent, area: Rect) -> Result<()> {
             } else if let Some(i) = ui::hit_file(area, m.column, m.row, app.files.len()) {
                 app.select_file(i)?;
             } else if let Some(i) =
-                ui::hit_diff(area, m.column, m.row, app.diff.len(), app.diff_scroll)
+                ui::hit_diff(area, m.column, m.row, app.visible.len(), app.diff_scroll)
             {
                 app.focus = Focus::Diff;
                 app.diff_cursor = i;
                 app.select_anchor = None;
+                // A click on a fold marker toggles it.
+                app.expand_fold();
             }
         }
         MouseEventKind::Drag(MouseButton::Left) => {
-            if let Some(i) = ui::hit_diff(area, m.column, m.row, app.diff.len(), app.diff_scroll) {
+            if let Some(i) = ui::hit_diff(area, m.column, m.row, app.visible.len(), app.diff_scroll)
+            {
                 app.drag_select_to(i);
             }
         }

@@ -5,7 +5,7 @@ mod common;
 use std::collections::HashMap;
 
 use common::Repo;
-use herdr_review::git::{DiffLineKind, changed_files, file_diff, parse_diff};
+use herdr_review::git::{changed_files, file_content, merge_base};
 use herdr_review::model::{ChangeKind, ChangedFile, Scope};
 
 fn by_path(files: &[ChangedFile]) -> HashMap<&str, &ChangedFile> {
@@ -38,45 +38,40 @@ fn lists_every_change_kind_with_stats() {
 }
 
 #[test]
-fn diff_lines_carry_their_side_and_number() {
+fn file_content_reads_the_committed_version_not_the_worktree() {
     let r = Repo::init();
     r.write("a.rs", "alpha\nbeta\ngamma\n");
     r.commit_all("init");
-    r.write("a.rs", "alpha\nBETA\ngamma\n");
+    r.write("a.rs", "alpha\nBETA\ngamma\n"); // the worktree moves on
 
-    let raw = file_diff(r.path(), Scope::Uncommitted, "a.rs", false, None).unwrap();
-    let lines = parse_diff(&raw);
-
-    let removed = lines
-        .iter()
-        .find(|l| l.kind == DiffLineKind::Removed && l.text.contains("beta"))
-        .expect("removed beta line");
-    let added = lines
-        .iter()
-        .find(|l| l.kind == DiffLineKind::Added && l.text.contains("BETA"))
-        .expect("added BETA line");
-
-    assert_eq!(removed.old_no, Some(2));
-    assert_eq!(removed.new_no, None);
-    assert_eq!(added.new_no, Some(2));
-    assert_eq!(added.old_no, None);
+    // The old side of a diff: HEAD's content, not the working tree.
+    assert_eq!(file_content(r.path(), "HEAD", "a.rs"), "alpha\nbeta\ngamma\n");
 }
 
 #[test]
-fn untracked_file_diff_shows_additions() {
+fn file_content_is_empty_for_a_path_absent_at_that_rev() {
     let r = Repo::init();
     r.write("seed.rs", "x\n");
     r.commit_all("init");
-    r.write("fresh.rs", "line one\nline two\n");
+    r.write("fresh.rs", "line one\nline two\n"); // untracked — not in HEAD
 
+    // An added/untracked file has no old side, so its HEAD content is empty.
+    assert_eq!(file_content(r.path(), "HEAD", "fresh.rs"), "");
     let files = changed_files(r.path(), Scope::Uncommitted, None).unwrap();
-    let fresh = by_path(&files)["fresh.rs"];
-    assert_eq!(fresh.kind, ChangeKind::Untracked);
-    assert_eq!(fresh.additions, 2);
+    assert_eq!(by_path(&files)["fresh.rs"].additions, 2);
+}
 
-    let raw = file_diff(r.path(), Scope::Uncommitted, "fresh.rs", true, None).unwrap();
-    let lines = parse_diff(&raw);
-    assert_eq!(lines.iter().filter(|l| l.kind == DiffLineKind::Added).count(), 2);
+#[test]
+fn merge_base_is_the_branch_point() {
+    let r = Repo::init();
+    r.write("base.rs", "1\n");
+    r.commit_all("base");
+    let branch_point = r.git(&["rev-parse", "HEAD"]).trim().to_string();
+    r.git(&["checkout", "-q", "-b", "feature"]);
+    r.write("base.rs", "2\n");
+    r.commit_all("diverge");
+
+    assert_eq!(merge_base(r.path(), Some("main")), Some(branch_point));
 }
 
 #[test]
@@ -134,7 +129,7 @@ fn git_access_never_mutates_the_repo() {
     let status_before = r.git(&["status", "--porcelain"]);
 
     let _ = changed_files(r.path(), Scope::Uncommitted, None).unwrap();
-    let _ = file_diff(r.path(), Scope::Uncommitted, "a.rs", false, None).unwrap();
+    let _ = file_content(r.path(), "HEAD", "a.rs");
     let _ = changed_files(r.path(), Scope::Branch, Some("main")).unwrap();
 
     assert_eq!(head_before, r.git(&["rev-parse", "HEAD"]), "HEAD unchanged");

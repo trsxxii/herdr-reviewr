@@ -1,7 +1,7 @@
 ---
-Status: Current
+Status: Draft
 Created: 2026-06-23
-Last edited: 2026-06-23
+Last edited: 2026-06-24
 ---
 
 # herdr-review
@@ -25,7 +25,7 @@ The end-state vision is a review cockpit: a file viewer (`All files`), a changes
 
 In scope for this design:
 
-- The `Changes` view: a changed-files list for a scope, plus a diff pane.
+- The `Changes` view: a changed-files list for a scope, plus a syntax-highlighted diff viewer (`diff-view.md`).
 - Two scopes, `uncommitted` and `branch`, defined in `review-model.md`.
 - Comments anchored to `path:start-end`, held in memory for the review pass.
 - Export of all comments to the agent (filling its input) or to the clipboard.
@@ -39,6 +39,8 @@ Named so the architecture stays open to them. None is part of this design.
 - An `All files` tab that browses the whole repo tree, not only changed files.
 - A `Checks` tab showing PR status and CI via `gh`, plus an aggregated comment list.
 - A `last-turn` scope that diffs only the latest agent turn.
+- Reviewed-file state — marking a file reviewed and greying it in the list.
+- Search within the diff, and live theme switching.
 
 ## Invariants
 
@@ -59,5 +61,7 @@ Named so the architecture stays open to them. None is part of this design.
 ## Related specs
 
 - `./review-model.md`
+- `./diff-view.md`
+- `./file-list.md`
 - `./tui.md`
 - `./herdr-host.md`

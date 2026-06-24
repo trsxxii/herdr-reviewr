@@ -1,0 +1,141 @@
+---
+Status: Draft
+Created: 2026-06-24
+Last edited: 2026-06-24
+---
+
+# Diff view
+
+The structured diff viewer: how a file's changes are modeled from its content and rendered with syntax highlighting, word-level emphasis, line numbers, and foldable context.
+
+## Overview
+
+The viewer renders a `FileDiff` — the selected file modeled as a list of rows, built from the file's old and new content (not from parsed `git diff` text). A row is the unit the diff pane paints and the cursor moves over.
+
+What the reviewer sees (unified view, a renamed TypeScript file):
+
+```
+ utils.ts → code_utils.ts                                      −7 +4
+ ⋯   11 unmodified lines
+ 15    export function createSpanFromToken(token: ThemedToken) {
+ 16 ▌ const element = document.createElement('div');     ← deletion (red bar + tint)
+ 16 ▌ const element = document.createElement('span');    ← insertion (green bar + tint)
+ 17 ▌ const style = getTokenStyleObject(token);          ← deletion
+ 17 ▌ const style = token.htmlStyle ?? getTokenStyleObject(token);   ← insertion
+ 18    element.style = stringifyTokenStyle(style);
+ 19 ▌ element.textContent = token.content;               ← insertion
+ ⋯   30 unmodified lines
+```
+
+- Code is syntax-highlighted; the changed words (`'div'`→`'span'`, the inserted `token.htmlStyle ??`) carry a brighter background.
+- The gutter is a line number plus a one-cell change bar (`▌`): red on a deletion, green on an insertion, blank on context. The bar and the row tint mark the change — there is no `+`/`−` glyph.
+- A run of unchanged lines beyond the context margin collapses to a `⋯ N unmodified lines` fold the reviewer can expand.
+
+### FileDiff
+
+| field | type | meaning |
+|-------|------|---------|
+| `path` | string | Repo-relative path; the new path for a rename. |
+| `previous_path` | string? | The old path when the file was renamed; absent otherwise. |
+| `change` | enum | One of `added`, `modified`, `deleted`, `renamed`, `untracked`. |
+| `language` | string? | Detected from the path for highlighting; absent when unknown (renders plain). |
+| `state` | enum | `normal` shows rows; `binary` and `too_large` show a notice instead. |
+| `rows` | Row[] | The render-and-cursor units, in display order. |
+
+### Row
+
+A row is one of four kinds. Content rows (`context`, `deletion`, `insertion`) are selectable for comments; a `fold` is not.
+
+| kind | carries | meaning |
+|------|---------|---------|
+| `context` | `old_no`, `new_no`, `spans` | An unchanged line shown in both versions. |
+| `deletion` | `old_no`, `spans`, `emphasis` | A line removed from the old version. |
+| `insertion` | `new_no`, `spans`, `emphasis` | A line added in the new version. |
+| `fold` | `hidden` | A collapsed run of `hidden` unchanged lines, expandable in place. |
+
+- `spans` — the line's content as syntax-highlighted segments, each a `(text, color)` from highlighting the **whole** file; plain one-segment text when `language` is absent.
+- `emphasis` — the character ranges within the line that differ from its paired counterpart, rendered with a brighter background; empty when the line has no close pair.
+
+## Behavior
+
+### Building the model
+
+- Content comes from git: the old version via `git show <rev>:<path>`, the new version from the worktree (or `git show` for branch scope). An `untracked` file has empty old content; a `deleted` file has empty new content.
+- The diff is computed with the `similar` crate (`TextDiff::from_lines`) over old vs new content, grouped into hunks with a context margin of 3 lines.
+- `emphasis` comes from `similar`'s inline word-level diff over each paired line within a change block — a run of deletions immediately followed by a run of insertions pairs line by line; unpaired lines get empty `emphasis`.
+- Highlighting comes from `syntect` over the broad bat/`two-face` syntax and theme set, so most languages color out of the box: the full old and new content are highlighted once each, and every row reads its line's `spans`. Full-file highlighting is why a multi-line string or comment colors correctly inside a hunk.
+- The diff and the highlighting are both cached per file by content; a poll that finds the file unchanged reuses the prior rows and spans rather than recomputing.
+
+### Color
+
+- The pane targets a dark terminal; the default theme is Catppuccin Mocha, with `--theme` to override. Catppuccin is a common terminal palette, so the diff and the shell share one set of colors.
+- Syntax `spans` take only foreground token colors from the theme; the pane background stays transparent, so the diff sits on the terminal's own background.
+- The structural fills draw from the same Catppuccin palette: a deletion row tints with its red, an insertion its green, `emphasis` a brighter shade, and the cursor and selection their own fills — so highlight and syntax never clash.
+
+### Folding
+
+- An unchanged run longer than the context margin collapses to one `fold` row showing its hidden-line count, drawn as a distinct band so it reads as a hunk separator.
+- Expanding a `fold` replaces it with its lines as `context` rows; expansion is permanent for the session — an expand is intentional, so there is no collapse-back.
+- A file's leading and trailing unchanged regions fold the same way, so the pane opens focused on the changes.
+
+### Views
+
+- `unified` — one column; a deletion and its replacement appear on adjacent rows; a single line-number gutter. The default, and the only view that works at any sidebar width.
+- `stacked` — per change block, the removed lines as one group then the added lines as one group, each full width with its own gutter; clearer word-diff in a narrow pane.
+- The view is a presentation toggle; the `FileDiff` model is identical across views.
+
+### Wrapping and the gutter
+
+- Long lines wrap by default; a toggle switches to horizontal scroll, moved with `←`/`→` while the gutter stays pinned. A wrapped continuation row has a blank gutter so numbers stay aligned.
+- The gutter is a fixed line-number column plus the one-cell change bar; in `stacked` and split views it shows both old and new numbers.
+- A line that carries a comment shows its line number in the comment color, so the change bar keeps its add/remove color and the two never collide.
+- Tabs render as spaces (4 by default) so code and the gutter stay aligned.
+
+### Comment anchoring
+
+- A comment anchors to the diff exactly as `review-model.md` defines it: a `side` plus a `start..end` line range, with the verbatim snippet.
+- A selection runs over content rows; folds are skipped. The export snippet is reconstructed from the selected rows as `+`/`−`/space-prefixed lines — the markers live in the snippet sent to the agent, not on screen.
+
+### Config
+
+Presentation flags, each with a default:
+
+- `--theme <name>` — the syntect theme for syntax colors.
+- `--view unified|stacked` — the diff view on open.
+- `--wrap on|off` — whether long lines wrap on open.
+
+## Failure semantics
+
+The viewer is read-only and recomputed on every refresh, so it never persists or double-applies. It degrades rather than blocks:
+
+- A file beyond the size budget renders as `too_large` with a notice — never a hang while diffing or highlighting.
+- A `binary` file renders `binary — no line comments`.
+- A highlighting failure (unknown language, grammar error) falls back to plain `spans`; the diff still renders.
+- A diff with no content lines — a pure rename, a mode-only change, an empty file — renders its header and a one-line notice, not an empty pane. A `\ No newline at end of file` marker renders as a dim trailing note, not a content row.
+- A refresh recomputes the model from current content; the line numbers a saved or in-progress comment anchors to are unaffected, so no comment is lost or re-bound.
+
+## Non-goals
+
+- No side-by-side split view in this design — a sidebar rarely has the width; it is roadmap.
+- No tree-sitter highlighting — syntect only.
+- No editing, staging, or reverting from the viewer.
+- No line-number rebasing of comments as the diff shifts — `review-model.md` owns that, via the snippet.
+
+## Decisions
+
+- Model from file content, not parsed `git diff` text — text carries no syntax context and no lines to expand; the old/new content carries both. Rejected: keep parsing unified-diff text.
+- `similar` for the diff and the inline word emphasis — one pure-Rust crate does line grouping and word-level emphasis. Rejected: `git2`/libgit2, which adds a C dependency for convenience the crate already provides.
+- `syntect` over tree-sitter — one mature crate, ~200 bundled languages, line spans that map straight to ratatui. Rejected: tree-sitter, which needs a grammar crate and highlight query per language.
+- Unified and stacked, split deferred — both work in a narrow sidebar; side-by-side needs width it rarely has. Rejected: shipping split now.
+- Truecolor syntax theme, current structural colors kept — the add/remove tint, change bars, and selection stay as they are; only syntax token colors come from the theme. Rejected: mapping syntax onto the terminal's 16 ANSI colors, which is less rich.
+- Change bar and tint, not `+`/`−` glyphs — the colored bar plus row tint already mark add versus remove, so the glyphs are redundant on screen. The export snippet keeps `+`/`−`/space markers for the agent. Rejected: showing both.
+- Catppuccin Mocha as the default theme — a cohesive dark palette that matches a Catppuccin terminal, so the diff blends with the shell instead of importing foreign colors. Rejected: a generic bundled theme that clashes with the terminal.
+
+## Open decisions
+
+- None.
+
+## Related specs
+
+- `./review-model.md`
+- `./tui.md`

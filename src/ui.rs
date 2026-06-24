@@ -15,7 +15,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 
 use crate::app::{App, Focus, Mode};
-use crate::git::{DiffLine, DiffLineKind};
+use crate::diff::{FileState, Row};
 
 pub fn render(frame: &mut Frame, app: &App) {
     let area = frame.area();
@@ -145,19 +145,16 @@ fn render_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
     let used = HEADER_PREFIX.len() + chip.len() + suffix.len() + button.len();
     let pad = (area.width as usize).saturating_sub(used);
 
-    let bar = Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD);
+    // A quiet surface bar: the title in lavender, the clickable scope and Send controls
+    // accented so they read as buttons without a loud full-width fill.
+    let bar = Style::default().bg(cat::SURFACE0);
+    let send_fg = if app.store.is_empty() { cat::OVERLAY0 } else { cat::GREEN };
     let line = Line::from(vec![
-        Span::styled(HEADER_PREFIX, bar),
-        Span::styled(
-            chip,
-            Style::default().fg(Color::Yellow).bg(Color::Cyan).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(suffix, Style::default().fg(Color::DarkGray)),
-        Span::raw(" ".repeat(pad)),
-        Span::styled(
-            button,
-            Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(HEADER_PREFIX, bar.fg(cat::LAVENDER).add_modifier(Modifier::BOLD)),
+        Span::styled(chip, bar.fg(cat::YELLOW).add_modifier(Modifier::BOLD)),
+        Span::styled(suffix, bar.fg(cat::OVERLAY0)),
+        Span::styled(" ".repeat(pad), bar),
+        Span::styled(button, bar.fg(send_fg).add_modifier(Modifier::BOLD)),
     ]);
     frame.render_widget(Paragraph::new(line), area);
 }
@@ -172,22 +169,22 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
+    let width = inner.width as usize;
     let items: Vec<ListItem> = app
         .files
         .iter()
         .enumerate()
         .map(|(i, f)| {
-            let selected = i == app.file_cursor;
             let marker = Span::styled(
                 format!("{} ", f.kind.marker()),
                 Style::default().fg(kind_color(f.kind.marker())),
             );
-            let name = Span::styled(f.path.clone(), name_style(selected));
+            let name = Span::styled(f.path.clone(), text_style());
             let stat = Span::styled(
                 format!("  +{} -{}", f.additions, f.deletions),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(cat::OVERLAY0),
             );
-            ListItem::new(Line::from(vec![marker, name, stat]))
+            selectable_row(vec![marker, name, stat], width, i == app.file_cursor)
         })
         .collect();
     frame.render_widget(List::new(items), inner);
@@ -199,12 +196,13 @@ fn render_diff_view(frame: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if app.diff.is_empty() {
-        frame.render_widget(dim_paragraph("no diff"), inner);
-        return;
-    }
-    if app.diff.iter().any(|l| l.text.starts_with("Binary ")) {
-        frame.render_widget(dim_paragraph("binary — no line comments"), inner);
+    if app.visible.is_empty() {
+        let msg = match app.diff.state {
+            FileState::Binary => "binary — no line comments",
+            FileState::TooLarge => "file too large to diff",
+            FileState::Normal => "no diff",
+        };
+        frame.render_widget(dim_paragraph(msg), inner);
         return;
     }
 
@@ -212,30 +210,28 @@ fn render_diff_view(frame: &mut Frame, app: &App, area: Rect) {
     if height == 0 {
         return;
     }
+    let width = inner.width as usize;
+    // Size the gutter to the file's largest line number, so it does not resize when a
+    // fold toggles (folds hide lines but keep the numbering).
+    let total_lines: usize =
+        app.diff.rows.iter().map(|r| if r.is_content() { 1 } else { r.hidden() }).sum();
+    let gutter_w = gutter_width(total_lines);
     let commented = app.commented_lines();
     let (lo, hi) = app.selection_range();
     let selecting = app.focus == Focus::Diff && app.select_anchor.is_some();
 
-    let line_at = |i: usize| -> Line {
-        let dl = &app.diff[i];
-        let gutter = if commented.contains(&i) {
-            Span::styled("▌", Style::default().fg(Color::Yellow))
-        } else {
-            Span::raw(" ")
-        };
-        let mut style = diff_style(dl);
-        if app.focus == Focus::Diff && i == app.diff_cursor {
-            style = style.add_modifier(Modifier::REVERSED);
-        } else if selecting && i >= lo && i <= hi {
-            style = style.bg(Color::Rgb(40, 40, 60));
-        }
-        Line::from(vec![gutter, Span::styled(dl.text.clone(), style)])
+    let row_line = |i: usize| -> Line {
+        let row = &app.visible[i];
+        let cursor = app.focus == Focus::Diff && i == app.diff_cursor;
+        let selected = selecting && i >= lo && i <= hi;
+        render_row(row, gutter_w, width, commented.contains(&i), cursor, selected)
     };
 
+    let rows = app.visible.len();
     if !app.composing() {
-        let start = app.diff_scroll.min(app.diff.len().saturating_sub(height));
-        let end = (start + height).min(app.diff.len());
-        frame.render_widget(Paragraph::new((start..end).map(&line_at).collect::<Vec<_>>()), inner);
+        let start = app.diff_scroll.min(rows.saturating_sub(height));
+        let end = (start + height).min(rows);
+        frame.render_widget(Paragraph::new((start..end).map(&row_line).collect::<Vec<_>>()), inner);
         return;
     }
 
@@ -246,8 +242,8 @@ fn render_diff_view(frame: &mut Frame, app: &App, area: Rect) {
     // Cap the box at height-1 so a comment taller than the viewport can't hide its anchor.
     let box_h = composer_height(app).min(height.saturating_sub(1)).max(1);
     let diff_rows = height - box_h;
-    let start = app.diff_scroll.min(app.diff.len().saturating_sub(diff_rows));
-    let last = app.diff.len() - 1;
+    let start = app.diff_scroll.min(rows.saturating_sub(diff_rows));
+    let last = rows - 1;
     let anchor = hi.clamp(start, last);
     let above_n = (anchor + 1 - start).min(diff_rows);
     let below_start = start + above_n;
@@ -261,18 +257,121 @@ fn render_diff_view(frame: &mut Frame, app: &App, area: Rect) {
 
     if above_n > 0 {
         frame.render_widget(
-            Paragraph::new((start..start + above_n).map(&line_at).collect::<Vec<_>>()),
+            Paragraph::new((start..start + above_n).map(&row_line).collect::<Vec<_>>()),
             slots[0],
         );
     }
     render_composer(frame, app, slots[1]);
     if below_n > 0 {
-        let end = (below_start + below_n).min(app.diff.len());
+        let end = (below_start + below_n).min(rows);
         frame.render_widget(
-            Paragraph::new((below_start..end).map(&line_at).collect::<Vec<_>>()),
+            Paragraph::new((below_start..end).map(&row_line).collect::<Vec<_>>()),
             slots[2],
         );
     }
+}
+
+// --- Catppuccin Mocha palette (one source for every color the chrome and diff use,
+// so the frame and the syntect-highlighted body share a single theme) ----------------
+
+mod cat {
+    use ratatui::style::Color::{self, Rgb};
+    // Surfaces, dark to light.
+    pub(super) const SURFACE0: Color = Rgb(0x31, 0x32, 0x44);
+    pub(super) const SURFACE1: Color = Rgb(0x45, 0x47, 0x5a);
+    pub(super) const SURFACE2: Color = Rgb(0x58, 0x5b, 0x70);
+    pub(super) const OVERLAY0: Color = Rgb(0x6c, 0x70, 0x86);
+    // Text.
+    pub(super) const SUBTEXT0: Color = Rgb(0xa6, 0xad, 0xc8);
+    pub(super) const TEXT: Color = Rgb(0xcd, 0xd6, 0xf4);
+    // Accents.
+    pub(super) const RED: Color = Rgb(0xf3, 0x8b, 0xa8);
+    pub(super) const GREEN: Color = Rgb(0xa6, 0xe3, 0xa1);
+    pub(super) const YELLOW: Color = Rgb(0xf9, 0xe2, 0xaf);
+    pub(super) const PEACH: Color = Rgb(0xfa, 0xb3, 0x87);
+    pub(super) const MAUVE: Color = Rgb(0xcb, 0xa6, 0xf7);
+    pub(super) const LAVENDER: Color = Rgb(0xb4, 0xbe, 0xfe);
+}
+
+// Structural diff fills tuned for the dark base; syntax token colors come from the theme.
+const DEL_BG: Color = Color::Rgb(0x3a, 0x27, 0x30);
+const INS_BG: Color = Color::Rgb(0x22, 0x33, 0x2b);
+const CURSOR_BG: Color = cat::SURFACE2;
+const SEL_BG: Color = cat::SURFACE0;
+const FOLD_BG: Color = cat::SURFACE1;
+
+/// The line-number column width for a diff of `rows` lines.
+fn gutter_width(rows: usize) -> usize {
+    rows.to_string().len().max(3)
+}
+
+/// One diff row as a full-width line: a left change bar, the line number, then
+/// syntax-colored code, tinted red/green for a change and padded so the row
+/// background fills the pane.
+fn render_row(
+    row: &Row,
+    gutter_w: usize,
+    width: usize,
+    commented: bool,
+    cursor: bool,
+    selected: bool,
+) -> Line<'static> {
+    if let Row::Fold { .. } = row {
+        // Quiet by default; the focused fold reveals its action (the footer also lists `o`).
+        let label = if cursor {
+            format!("  ⋯  {} unmodified lines — ⏎ expand", row.hidden())
+        } else {
+            format!("  ⋯  {} unmodified lines", row.hidden())
+        };
+        let mut line = Line::from(Span::styled(label, Style::default().fg(cat::SUBTEXT0)));
+        if let Some(pad) = width.checked_sub(line.width()).filter(|p| *p > 0) {
+            line.push_span(Span::raw(" ".repeat(pad)));
+        }
+        let bg = if cursor { CURSOR_BG } else { FOLD_BG };
+        return line.style(Style::default().bg(bg).add_modifier(Modifier::BOLD));
+    }
+    let num = row.new_no().or_else(|| row.old_no()).map_or(String::new(), |n| n.to_string());
+    let num_color = if commented { cat::YELLOW } else { cat::OVERLAY0 };
+    let (bar, bar_color) = match row.marker() {
+        '-' => ("▌", cat::RED),
+        '+' => ("▌", cat::GREEN),
+        _ => (" ", cat::OVERLAY0),
+    };
+
+    // Bar first, at the far left edge, then the line number, then the code.
+    let mut spans = vec![
+        Span::styled(bar, Style::default().fg(bar_color)),
+        Span::styled(format!("{num:>gutter_w$} "), Style::default().fg(num_color)),
+    ];
+    for s in row.spans() {
+        spans.push(Span::styled(s.text.clone(), Style::default().fg(rgb(s.color))));
+    }
+    // Pad to the pane width so the row background fills the line, not just the text.
+    // `Line::width` is display-width aware, so wide (CJK/emoji) glyphs pad correctly.
+    let mut line = Line::from(spans);
+    if let Some(pad) = width.checked_sub(line.width()).filter(|p| *p > 0) {
+        line.push_span(Span::raw(" ".repeat(pad)));
+    }
+
+    let bg = if cursor {
+        Some(CURSOR_BG)
+    } else if selected {
+        Some(SEL_BG)
+    } else {
+        match row.marker() {
+            '-' => Some(DEL_BG),
+            '+' => Some(INS_BG),
+            _ => None,
+        }
+    };
+    match bg {
+        Some(bg) => line.style(Style::default().bg(bg)),
+        None => line,
+    }
+}
+
+fn rgb(c: crate::diff::Rgb) -> Color {
+    Color::Rgb(c.0, c.1, c.2)
 }
 
 /// The inline comment input box, drawn at `area` (under the selection in the diff).
@@ -282,7 +381,7 @@ fn render_composer(frame: &mut Frame, app: &App, area: Rect) {
     let title = if editing { format!("edit · {loc}") } else { format!("comment · {loc}") };
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Yellow))
+        .border_style(Style::default().fg(cat::PEACH))
         .title(title);
     let input_lines: Vec<&str> = app.input.split('\n').collect();
     let last = input_lines.len() - 1;
@@ -293,7 +392,7 @@ fn render_composer(frame: &mut Frame, app: &App, area: Rect) {
             if i == last {
                 Line::from(vec![
                     Span::raw((*text).to_string()),
-                    Span::styled("█", Style::default().fg(Color::Yellow)),
+                    Span::styled("█", Style::default().fg(cat::PEACH)),
                 ])
             } else {
                 Line::from((*text).to_string())
@@ -314,9 +413,9 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         }
     };
     let line = Line::from(vec![
-        Span::styled(left, Style::default().fg(Color::Black).bg(Color::Gray)),
-        Span::styled(format!(" {mid}"), Style::default().fg(Color::Yellow)),
-        Span::styled(format!("  {hints}"), Style::default().fg(Color::DarkGray)),
+        Span::styled(left, Style::default().fg(cat::TEXT).bg(cat::SURFACE0)),
+        Span::styled(format!(" {mid}"), Style::default().fg(cat::PEACH)),
+        Span::styled(format!("  {hints}"), Style::default().fg(cat::OVERLAY0)),
     ]);
     frame.render_widget(Paragraph::new(line).wrap(Wrap { trim: false }), area);
 }
@@ -326,45 +425,64 @@ fn render_comments_list(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Clear, popup);
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan))
+        .border_style(Style::default().fg(cat::MAUVE))
         .title(format!("Comments ({})", app.store.len()));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
+    let width = inner.width as usize;
     let stale = app.stale_files();
     let items: Vec<ListItem> = app
         .store
         .iter()
         .enumerate()
         .map(|(i, c)| {
-            let selected = i == app.list_cursor;
             let loc = Span::styled(
                 c.location(),
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                Style::default().fg(cat::MAUVE).add_modifier(Modifier::BOLD),
             );
-            let text = Span::styled(
-                format!("  {}", c.text),
-                if selected {
-                    Style::default().add_modifier(Modifier::REVERSED)
-                } else {
-                    Style::default()
-                },
-            );
-            let mut spans = vec![loc, text];
+            let mut spans = vec![loc, Span::styled(format!("  {}", c.text), text_style())];
             // A comment whose file has left the changeset is flagged but kept.
             if stale.contains(&c.file) {
-                spans.push(Span::styled("  (stale)", Style::default().fg(Color::Red)));
+                spans.push(Span::styled("  (stale)", Style::default().fg(cat::RED)));
             }
-            ListItem::new(Line::from(spans))
+            selectable_row(spans, width, i == app.list_cursor)
         })
         .collect();
     frame.render_widget(List::new(items), inner);
 }
 
+/// The default body text color.
+fn text_style() -> Style {
+    Style::default().fg(cat::TEXT)
+}
+
+/// A list row, highlighted with the shared selection fill (`surface2` + bold, full
+/// width) when `selected` — the same treatment the diff cursor uses, so every cursor
+/// in the UI reads the same. The fill is applied per span (with a trailing pad) so it
+/// spans the full width under the `List` widget, matching the diff's `Paragraph` rows.
+fn selectable_row(
+    mut spans: Vec<Span<'static>>,
+    width: usize,
+    selected: bool,
+) -> ListItem<'static> {
+    if selected {
+        let used: usize = spans.iter().map(Span::width).sum();
+        if width > used {
+            spans.push(Span::raw(" ".repeat(width - used)));
+        }
+        for s in &mut spans {
+            s.style = s.style.bg(CURSOR_BG).add_modifier(Modifier::BOLD);
+        }
+    }
+    ListItem::new(Line::from(spans))
+}
+
 // --- helpers -------------------------------------------------------------------
 
 fn bordered(title: &str, focused: bool) -> Block<'_> {
-    let color = if focused { Color::Cyan } else { Color::DarkGray };
+    // A focused pane gets a lavender border; an unfocused one recedes to a surface tone.
+    let color = if focused { cat::LAVENDER } else { cat::SURFACE2 };
     Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(color))
@@ -372,33 +490,16 @@ fn bordered(title: &str, focused: bool) -> Block<'_> {
 }
 
 fn dim_paragraph(text: &str) -> Paragraph<'_> {
-    Paragraph::new(text).style(Style::default().fg(Color::DarkGray))
+    Paragraph::new(text).style(Style::default().fg(cat::OVERLAY0))
 }
 
-fn name_style(selected: bool) -> Style {
-    if selected {
-        Style::default().add_modifier(Modifier::REVERSED).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-    }
-}
-
+/// The Catppuccin accent for a change marker, matched to the diff's add/remove hues.
 fn kind_color(marker: char) -> Color {
     match marker {
-        'A' | '?' => Color::Green,
-        'D' => Color::Red,
-        'R' => Color::Magenta,
-        _ => Color::Yellow,
-    }
-}
-
-fn diff_style(dl: &DiffLine) -> Style {
-    match dl.kind {
-        DiffLineKind::Added => Style::default().fg(Color::Green),
-        DiffLineKind::Removed => Style::default().fg(Color::Red),
-        DiffLineKind::Hunk => Style::default().fg(Color::Cyan),
-        DiffLineKind::Meta => Style::default().fg(Color::DarkGray),
-        DiffLineKind::Context => Style::default(),
+        'A' | '?' => cat::GREEN,
+        'D' => cat::RED,
+        'R' => cat::MAUVE,
+        _ => cat::YELLOW,
     }
 }
 

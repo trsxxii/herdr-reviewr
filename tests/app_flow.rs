@@ -9,8 +9,7 @@ use anyhow::{Result, bail};
 use common::Repo;
 use herdr_review::app::{App, Focus};
 use herdr_review::export::ExportTarget;
-use herdr_review::git::DiffLineKind;
-use herdr_review::model::Scope;
+use herdr_review::model::{Scope, Side};
 
 /// An export target that records what it was handed and can be made to fail.
 struct FakeTarget {
@@ -55,15 +54,107 @@ fn app_on(r: &Repo) -> App {
     app
 }
 
-/// Place the diff cursor on the first line of `kind` and write a comment there.
-fn comment_on(app: &mut App, kind: DiffLineKind, text: &str) {
+/// The index of the first diff row with the given marker (`'+'`, `'-'`, or `' '`).
+fn row_with(app: &App, marker: char) -> usize {
+    app.diff.rows.iter().position(|r| r.marker() == marker).expect("a row with that marker")
+}
+
+/// Place the diff cursor on the first row with `marker` and write a comment there.
+fn comment_on(app: &mut App, marker: char, text: &str) {
     app.focus = Focus::Diff;
-    app.diff_cursor = app.diff.iter().position(|l| l.kind == kind).expect("a line of that kind");
+    app.diff_cursor = row_with(app, marker);
     app.start_comment();
     for ch in text.chars() {
         app.input_push(ch);
     }
     app.submit_comment();
+}
+
+/// A repo whose `big.rs` has 40 lines with one change in the middle, so the head and
+/// tail unchanged runs fold.
+fn folded_repo() -> Repo {
+    use std::fmt::Write as _;
+    let r = Repo::init();
+    let mut old = String::new();
+    for i in 0..40 {
+        writeln!(old, "line {i}").unwrap();
+    }
+    r.write("big.rs", &old);
+    r.commit_all("init");
+    r.write("big.rs", &old.replace("line 20", "LINE 20"));
+    r
+}
+
+#[test]
+fn a_fold_expands_permanently_and_keeps_the_cursor_in_range() {
+    let r = folded_repo();
+    let mut app = app_on(&r);
+    app.focus = Focus::Diff;
+    let folded = app.visible.len();
+    assert!(app.visible.iter().any(|row| row.hidden() > 0), "opens folded");
+
+    // Land on the leading fold and expand it — the visible row count grows.
+    app.diff_cursor = app.visible.iter().position(|row| row.hidden() > 0).unwrap();
+    app.expand_fold();
+    let expanded = app.visible.len();
+    assert!(expanded > folded, "expanding reveals the hidden lines");
+    assert!(app.diff_cursor < app.visible.len(), "cursor stays in range");
+
+    // Expansion is permanent — pressing again on a revealed content line does nothing.
+    app.expand_fold();
+    assert_eq!(app.visible.len(), expanded, "no collapse-back");
+}
+
+#[test]
+fn a_comment_through_a_fold_anchors_to_gits_line_and_survives_a_poll() {
+    let r = folded_repo();
+    let mut app = app_on(&r);
+    app.focus = Focus::Diff;
+
+    // Comment on the changed line (new-side 21) while the rest is folded.
+    app.diff_cursor = app.visible.iter().position(|row| row.text().contains("LINE 20")).unwrap();
+    app.start_comment();
+    for ch in "here".chars() {
+        app.input_push(ch);
+    }
+    app.submit_comment();
+    let c = app.store.iter().next().unwrap();
+    assert_eq!((c.side, c.start), (Side::New, 21));
+
+    // A fold expand plus a poll keeps the comment.
+    app.diff_cursor = app.visible.iter().position(|row| row.hidden() > 0).unwrap();
+    app.expand_fold();
+    app.reload().unwrap();
+    assert_eq!(app.store.len(), 1, "the comment survives a fold expand and a poll");
+    assert!(app.commented_lines().iter().any(|&i| app.visible[i].text().contains("LINE 20")));
+}
+
+#[test]
+fn comment_anchors_to_gits_real_line_numbers() {
+    // `edited_repo`: a.rs has beta→BETA on line 2 and epsilon appended as new line 5.
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    app.focus = Focus::Diff;
+
+    app.diff_cursor = app.diff.rows.iter().position(|r| r.text().contains("epsilon")).unwrap();
+    app.start_comment();
+    for ch in "appended".chars() {
+        app.input_push(ch);
+    }
+    app.submit_comment();
+
+    app.diff_cursor =
+        app.diff.rows.iter().position(|r| r.marker() == '-' && r.text().contains("beta")).unwrap();
+    app.start_comment();
+    for ch in "removed".chars() {
+        app.input_push(ch);
+    }
+    app.submit_comment();
+
+    let appended = app.store.iter().find(|c| c.text == "appended").unwrap();
+    assert_eq!((appended.side, appended.start, appended.end), (Side::New, 5, 5));
+    let removed = app.store.iter().find(|c| c.text == "removed").unwrap();
+    assert_eq!((removed.side, removed.start, removed.end), (Side::Old, 2, 2));
 }
 
 #[test]
@@ -72,8 +163,8 @@ fn comments_on_added_and_removed_lines_capture_the_snippet() {
     let mut app = app_on(&r);
     assert_eq!(app.files.len(), 1);
 
-    comment_on(&mut app, DiffLineKind::Added, "this addition needs a test");
-    comment_on(&mut app, DiffLineKind::Removed, "why was this dropped?");
+    comment_on(&mut app, '+', "this addition needs a test");
+    comment_on(&mut app, '-', "why was this dropped?");
     assert_eq!(app.store.len(), 2);
 
     let removed = app
@@ -95,7 +186,7 @@ fn comments_on_added_and_removed_lines_capture_the_snippet() {
 fn a_saved_comment_survives_a_refresh() {
     let r = edited_repo();
     let mut app = app_on(&r);
-    comment_on(&mut app, DiffLineKind::Added, "keep me");
+    comment_on(&mut app, '+', "keep me");
     assert_eq!(app.store.len(), 1);
 
     r.write("b.rs", "another change\n"); // the world moves on
@@ -111,7 +202,7 @@ fn a_refresh_while_composing_freezes_input_and_diff() {
     let r = edited_repo();
     let mut app = app_on(&r);
     app.focus = Focus::Diff;
-    app.diff_cursor = app.diff.iter().position(|l| l.kind == DiffLineKind::Added).unwrap();
+    app.diff_cursor = row_with(&app, '+');
     app.start_comment();
     for ch in "half-written thought".chars() {
         app.input_push(ch);
@@ -132,8 +223,8 @@ fn a_refresh_while_composing_freezes_input_and_diff() {
 fn a_failed_export_keeps_comments_and_success_consumes_them() {
     let r = edited_repo();
     let mut app = app_on(&r);
-    comment_on(&mut app, DiffLineKind::Added, "one");
-    comment_on(&mut app, DiffLineKind::Removed, "two");
+    comment_on(&mut app, '+', "one");
+    comment_on(&mut app, '-', "two");
     assert_eq!(app.store.len(), 2);
 
     app.export(&FakeTarget::failing());
@@ -158,8 +249,8 @@ fn a_failed_export_keeps_comments_and_success_consumes_them() {
 fn send_consumes_the_whole_set() {
     let r = edited_repo();
     let mut app = app_on(&r);
-    comment_on(&mut app, DiffLineKind::Added, "first");
-    comment_on(&mut app, DiffLineKind::Removed, "second");
+    comment_on(&mut app, '+', "first");
+    comment_on(&mut app, '-', "second");
 
     app.export(&FakeTarget::ok());
     assert!(app.store.is_empty(), "send takes every comment, not just one");
@@ -170,7 +261,7 @@ fn a_comment_of_only_blank_lines_is_cancelled() {
     let r = edited_repo();
     let mut app = app_on(&r);
     app.focus = Focus::Diff;
-    app.diff_cursor = app.diff.iter().position(|l| l.kind == DiffLineKind::Added).unwrap();
+    app.diff_cursor = row_with(&app, '+');
     app.start_comment();
     app.input_push(' ');
     app.input_push('\n');
@@ -221,7 +312,7 @@ fn a_comment_can_be_written_across_multiple_lines() {
     let r = edited_repo();
     let mut app = app_on(&r);
     app.focus = Focus::Diff;
-    app.diff_cursor = app.diff.iter().position(|l| l.kind == DiffLineKind::Added).unwrap();
+    app.diff_cursor = row_with(&app, '+');
     app.start_comment();
     for ch in "first line".chars() {
         app.input_push(ch);
@@ -246,7 +337,7 @@ fn a_comment_can_be_written_across_multiple_lines() {
 fn a_comment_can_be_edited_then_deleted() {
     let r = edited_repo();
     let mut app = app_on(&r);
-    comment_on(&mut app, DiffLineKind::Added, "original");
+    comment_on(&mut app, '+', "original");
     let snippet_before = app.store.get(0).unwrap().lines.clone();
 
     app.open_list();
@@ -279,7 +370,7 @@ fn editing_from_the_list_navigates_to_the_comments_file() {
     let bi = app.files.iter().position(|f| f.path == "b.rs").unwrap();
     app.select_file(bi).unwrap();
     app.focus = Focus::Diff;
-    app.diff_cursor = app.diff.iter().position(|l| l.kind == DiffLineKind::Added).unwrap();
+    app.diff_cursor = row_with(&app, '+');
     app.start_comment();
     for ch in "fix this".chars() {
         app.input_push(ch);
@@ -295,15 +386,15 @@ fn editing_from_the_list_navigates_to_the_comments_file() {
     app.start_edit();
     assert!(app.composing());
     assert_eq!(app.diff_path.as_deref(), Some("b.rs"), "edit switched to the comment's file");
-    let dl = &app.diff[app.diff_cursor];
-    assert!(dl.new_no.is_some() || dl.old_no.is_some(), "cursor sits on a real diff line");
+    let dl = &app.diff.rows[app.diff_cursor];
+    assert!(dl.new_no().is_some() || dl.old_no().is_some(), "cursor sits on a real diff line");
 }
 
 #[test]
 fn a_comment_on_a_reverted_file_is_flagged_stale() {
     let r = edited_repo();
     let mut app = app_on(&r);
-    comment_on(&mut app, DiffLineKind::Added, "note");
+    comment_on(&mut app, '+', "note");
 
     r.write("a.rs", "alpha\nbeta\ngamma\ndelta\n"); // back to committed state
     app.reload().unwrap();
@@ -340,7 +431,7 @@ fn a_multi_line_range_comment_spans_lines_and_keeps_the_whole_snippet() {
     app.focus = Focus::Diff;
 
     // Anchor on the first changed line, then extend the selection down two rows.
-    let first = app.diff.iter().position(|l| l.kind == DiffLineKind::Removed).unwrap();
+    let first = row_with(&app, '-');
     app.diff_cursor = first;
     app.toggle_select();
     app.move_cursor(1).unwrap();
@@ -371,7 +462,7 @@ fn scope_cannot_change_while_composing() {
     let r = edited_repo();
     let mut app = app_on(&r);
     app.focus = Focus::Diff;
-    app.diff_cursor = app.diff.iter().position(|l| l.kind == DiffLineKind::Added).unwrap();
+    app.diff_cursor = row_with(&app, '+');
     app.start_comment();
     app.input_push('x');
 
@@ -398,16 +489,12 @@ fn the_app_reads_branch_scoped_diffs_not_working_tree() {
 
     // The diff the App loaded for branch scope is base...HEAD, so it shows the
     // committed branch content — which the uncommitted (working-tree) scope cannot.
-    let added: Vec<&str> = app
+    let on_branch = app
         .diff
+        .rows
         .iter()
-        .filter(|l| l.kind == DiffLineKind::Added)
-        .map(|l| l.text.as_str())
-        .collect();
-    assert!(
-        added.iter().any(|t| t.contains("committed on the feature branch")),
-        "branch diff carries the committed line: {added:?}"
-    );
+        .any(|r| r.marker() == '+' && r.text().contains("committed on the feature branch"));
+    assert!(on_branch, "branch diff carries the committed line");
 }
 
 #[test]
@@ -448,7 +535,7 @@ fn the_diff_scroll_is_sticky_and_only_follows_the_cursor_off_screen() {
 
     // A viewport taller than the whole diff never scrolls.
     app.diff_cursor = 0;
-    app.clamp_diff_scroll(app.diff.len() + 50);
+    app.clamp_diff_scroll(app.diff.rows.len() + 50);
     assert_eq!(app.diff_scroll, 0, "no scroll when the diff fits the viewport");
 }
 
@@ -483,7 +570,7 @@ fn the_diff_title_stays_on_the_composed_file_through_a_refresh() {
     let r = edited_repo(); // a.rs is the only changed file
     let mut app = app_on(&r);
     app.focus = Focus::Diff;
-    app.diff_cursor = app.diff.iter().position(|l| l.kind == DiffLineKind::Added).unwrap();
+    app.diff_cursor = row_with(&app, '+');
     assert_eq!(app.diff_path.as_deref(), Some("a.rs"));
 
     app.start_comment();
@@ -506,7 +593,7 @@ fn a_comment_submitted_after_its_file_left_the_changeset_anchors_to_that_file() 
     let r = edited_repo(); // a.rs is the only changed file
     let mut app = app_on(&r);
     app.focus = Focus::Diff;
-    app.diff_cursor = app.diff.iter().position(|l| l.kind == DiffLineKind::Added).unwrap();
+    app.diff_cursor = row_with(&app, '+');
     app.start_comment();
     for ch in "note for a.rs".chars() {
         app.input_push(ch);
@@ -527,8 +614,8 @@ fn a_comment_submitted_after_its_file_left_the_changeset_anchors_to_that_file() 
 fn deleting_the_last_listed_comment_clamps_the_list_cursor() {
     let r = edited_repo();
     let mut app = app_on(&r);
-    comment_on(&mut app, DiffLineKind::Added, "one");
-    comment_on(&mut app, DiffLineKind::Removed, "two");
+    comment_on(&mut app, '+', "one");
+    comment_on(&mut app, '-', "two");
 
     app.open_list();
     app.list_move(1); // cursor on the last comment (index 1)
@@ -545,14 +632,14 @@ fn a_non_repo_path_yields_an_empty_state_not_an_error() {
     let mut app = App::new(dir.path().to_path_buf(), Scope::Uncommitted, None);
     assert!(app.reload().is_ok(), "a non-repo reload is graceful, not an error");
     assert!(app.files.is_empty());
-    assert!(app.diff.is_empty());
+    assert!(app.diff.rows.is_empty());
 }
 
 #[test]
 fn jump_moves_the_cursor_onto_a_commented_line() {
     let r = edited_repo();
     let mut app = app_on(&r);
-    comment_on(&mut app, DiffLineKind::Added, "note");
+    comment_on(&mut app, '+', "note");
 
     app.focus = Focus::Diff;
     app.diff_cursor = 0;

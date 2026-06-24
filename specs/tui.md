@@ -1,7 +1,7 @@
 ---
-Status: Current
+Status: Draft
 Created: 2026-06-23
-Last edited: 2026-06-23
+Last edited: 2026-06-24
 ---
 
 # TUI
@@ -12,22 +12,23 @@ The terminal interface: how the review is laid out, how you drive it by keyboard
 
 ```
 ┌ Changes [uncommitted]  9 files ──────────────────────────── [ Send (3) ] ┐
-│  @@ -40,7 +40,18 @@                          │ M llm_registry.py  +18 -8  │
-│  - from .z import w                          │ M deep_research.py +155-62 │
-│  + from .x import y   ▌                      │ D old_runner.py    -47     │
-│  ┌ comment · llm_registry.py:41 ──────────┐  │ …                          │
+│ ⋯  11 unmodified lines                       │ M llm_registry.py  +18 -8  │
+│ 40    def resolve(self, name):               │ M deep_research.py +155-62 │
+│ 41 ▌  from .z import w                         │ D old_runner.py    -47     │
+│ 41 ▌  from .x import y                         │ …                          │
+│  ┌ comment · llm_registry.py:41 ──────────┐  │                            │
 │  │ this import path looks wrong            │  │                            │
 │  │ and breaks on 3.12█                     │  │                            │
 │  └─────────────────────────────────────────┘ │                            │
-│   next_context_line()                         │                            │
+│ 42    return registry[name]                   │                            │
 ├───────────────────────────────────────────────┴──────────────────────────┤
 │ 9 file(s) · 3 comment(s)  tab focus · c comment · s send · y copy · l list │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
 - The header shows the active tab, the scope, the file count, and a clickable `Send` button with the comment count.
-- The left pane is the selected file's diff, with commented line ranges marked.
-- The right pane is the changed-files list for the current scope.
+- The left pane is the selected file's diff — syntax-highlighted, with line numbers, change bars, word-level emphasis, and foldable context, defined in `diff-view.md`.
+- The right pane is the changed-files navigator for the current scope — a directory tree, defined in `file-list.md`.
 - The comment input opens **inline, directly under the last line of the selection**, pushing the diff below it down; it grows as you type more lines. It is not a footer band.
 - The footer is a key-hint and status line.
 
@@ -41,13 +42,19 @@ Every action has a keyboard binding. The mouse-relevant ones also work by click 
 
 | action | keyboard | mouse |
 |--------|----------|-------|
-| move the cursor in the focused pane — in the file list this selects a file and loads its diff | `j` / `k` / arrows | click a file row |
-| switch focus between the file list and the diff | `tab` (toggle) · `enter` (into the diff) | click a pane |
+| move the cursor in the focused pane — in the file list this selects a file and loads its diff | `j` / `k` / `↑` / `↓` | click a file row |
+| open the selected file's diff, or toggle the selected directory | `enter` | click a file or directory row |
+| switch focus between the file list and the diff | `tab` | click a pane |
 | scroll the diff | `PageUp` / `PageDown` / `ctrl+u` / `ctrl+d` | wheel |
+| scroll the diff horizontally, when wrap is off | `←` / `→` | — |
 | switch scope | `u` uncommitted / `b` branch | click the scope in the header |
+| expand the fold under the cursor | `enter` | click the `⋯` fold row |
+| toggle unified / stacked view | `t` | — |
+| toggle line wrap | `w` | — |
 | select a line range, removed lines included | `v` then move | click-drag in the diff |
 | comment on the selection | `c`, type, `enter` | after a drag-select |
 | insert a newline in a comment | `Alt+Enter` / `Shift+Enter` / `Ctrl+J` | — |
+| delete the previous word in a comment | `Ctrl+W` | — |
 | edit the comment under the cursor | `e` | — |
 | delete the comment under the cursor | `d` | — |
 | jump to next / previous comment | `n` / `N` | — |
@@ -57,7 +64,7 @@ Every action has a keyboard binding. The mouse-relevant ones also work by click 
 | refresh now | `r` | — |
 | quit | `q` | — |
 
-Writing a comment: select a range or land on a line, press `c`, and an input box opens **inline under the last selected line**. Type — `Alt+Enter` / `Shift+Enter` / `Ctrl+J` inserts a newline, so a comment can be multiple lines — then `enter` saves or `esc` cancels. `e` reopens the comment under the cursor to edit its text in place. There is no single-vs-all choice: `s` / `S` (or the `Send` button) sends every written comment, and a successful send reports a transient status such as `sent 3 comments`.
+Writing a comment: select a range or land on a line, press `c`, and an input box opens **inline under the last selected line**. Type — `Alt+Enter` / `Shift+Enter` / `Ctrl+J` inserts a newline, `Ctrl+W` deletes the previous word — then `enter` saves or `esc` cancels. The box grows to fit the text as it wraps to the box width, not only on explicit newlines. `e` reopens the comment under the cursor to edit its text in place. There is no single-vs-all choice: `s` / `S` (or the `Send` button) sends every written comment, and a successful send reports a transient status such as `sent 3 comments`.
 
 ### Refresh
 
@@ -76,7 +83,7 @@ Writing a comment: select a range or land on a line, press `c`, and an input box
 ## Non-goals
 
 - No editing, staging, or committing from the UI — review and comment only.
-- No syntax highlighting beyond diff add/remove coloring in this design.
+- No side-by-side split view — roadmap; `diff-view.md` ships unified and stacked.
 
 ## Decisions
 
@@ -86,6 +93,7 @@ Writing a comment: select a range or land on a line, press `c`, and an input box
 - Inline comment input — the box opens under the selected line (insert: the diff below shifts down) rather than in a detached footer, so the comment sits with the code it is about; it grows to fit multi-line text.
 - One `Send`, not send-one vs send-all — there is just a set of written comments; `s` / `S` / the button send them all. Removing the distinction drops a needless choice from the hot path.
 - Component architecture — each region (`TabBar`, `FileList`, `DiffView`, `CommentInput`, `StatusBar`) owns its state and is testable in isolation, over a single monolithic update.
+- A structured diff viewer, not rendered git-diff text — the diff pane renders the model in `diff-view.md` (syntax, line numbers, change bars, word emphasis, folds), so the pane shows code, not raw `git diff` plumbing.
 
 ## Open decisions
 
@@ -93,4 +101,6 @@ Writing a comment: select a range or land on a line, press `c`, and an input box
 
 ## Related specs
 
+- `./diff-view.md`
+- `./file-list.md`
 - `./review-model.md`

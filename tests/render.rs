@@ -5,7 +5,6 @@ mod common;
 
 use common::Repo;
 use herdr_review::app::{App, Focus};
-use herdr_review::git::DiffLineKind;
 use herdr_review::model::Scope;
 use herdr_review::ui::{self, HeaderHit};
 use ratatui::Terminal;
@@ -33,6 +32,16 @@ fn render(app: &App) -> String {
     dump(terminal.backend().buffer())
 }
 
+/// Render and return the buffer, for cell-style assertions.
+fn render_buffer(app: &App) -> Buffer {
+    let mut terminal = Terminal::new(TestBackend::new(140, 40)).unwrap();
+    terminal.draw(|f| ui::render(f, app)).unwrap();
+    terminal.backend().buffer().clone()
+}
+
+/// Catppuccin surface2 — the shared selection/cursor fill.
+const SELECTION_BG: ratatui::style::Color = ratatui::style::Color::Rgb(0x58, 0x5b, 0x70);
+
 fn edited_app() -> App {
     let r = Repo::init();
     r.write("hello.rs", "alpha\nbeta\n");
@@ -43,6 +52,17 @@ fn edited_app() -> App {
     // The repo is only needed through reload(); rendering reads cached state, so
     // `r` can drop here and clean up its tempdir.
     app
+}
+
+#[test]
+fn the_selected_file_row_fills_with_the_shared_selection_color() {
+    let app = edited_app(); // one file, file_cursor = 0, Files focused
+    let buf = render_buffer(&app);
+    // Files pane: right 32% of 140 cols; its border is at y=1, first content row at y=2.
+    let files_x0 = 140 - 140 * 32 / 100 + 1;
+    let selected =
+        (files_x0..139).filter(|&x| buf.cell((x, 2)).is_some_and(|c| c.bg == SELECTION_BG)).count();
+    assert!(selected > 10, "the selected file row fills wide with surface2: {selected} cells");
 }
 
 #[test]
@@ -83,7 +103,7 @@ fn empty_repo_shows_empty_states() {
 fn composing_renders_the_inline_multiline_box() {
     let mut app = edited_app();
     app.focus = Focus::Diff;
-    app.diff_cursor = app.diff.iter().position(|l| l.kind == DiffLineKind::Added).unwrap();
+    app.diff_cursor = app.diff.rows.iter().position(|r| r.marker() == '+').unwrap();
     app.start_comment();
     for ch in "line one".chars() {
         app.input_push(ch);
@@ -108,11 +128,8 @@ fn the_box_grows_with_multiline_input_and_keeps_the_anchor_visible() {
     let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
     app.reload().unwrap();
     app.focus = Focus::Diff;
-    app.diff_cursor = app
-        .diff
-        .iter()
-        .position(|l| l.kind == DiffLineKind::Added && l.text.contains('B'))
-        .unwrap();
+    app.diff_cursor =
+        app.diff.rows.iter().position(|r| r.marker() == '+' && r.text().contains('B')).unwrap();
     app.start_comment();
     for ch in "one\ntwo\nthree".chars() {
         app.input_push(ch);
@@ -121,7 +138,8 @@ fn the_box_grows_with_multiline_input_and_keeps_the_anchor_visible() {
     let out = render(&app);
     assert!(out.contains("one") && out.contains("two") && out.contains("three"), "all box lines");
     let lines: Vec<&str> = out.lines().collect();
-    let anchor = lines.iter().position(|l| l.contains("+B")).expect("anchor line visible");
+    // The inserted line is the only one carrying an uppercase `B` (no `+` glyph now).
+    let anchor = lines.iter().position(|l| l.contains('B')).expect("anchor line visible");
     let box_row = lines.iter().position(|l| l.contains("comment ·")).expect("box");
     assert!(anchor < box_row, "the commented line stays above the box as it grows");
 }
@@ -135,7 +153,7 @@ fn the_box_is_inserted_under_the_selected_line() {
     let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
     app.reload().unwrap();
     app.focus = Focus::Diff;
-    app.diff_cursor = app.diff.iter().position(|l| l.text.contains("BETA")).unwrap();
+    app.diff_cursor = app.diff.rows.iter().position(|r| r.text().contains("BETA")).unwrap();
     app.start_comment();
     for ch in "note".chars() {
         app.input_push(ch);
@@ -179,9 +197,9 @@ fn file_and_diff_clicks_map_to_row_indices() {
     assert_eq!(ui::hit_file(AREA, 120, 2, app.files.len()), Some(0));
     assert_eq!(ui::hit_file(AREA, 120, 9, app.files.len()), None);
     // Left pane: diff rows map top-down to diff-line indices.
-    assert!(app.diff.len() > 1);
-    assert_eq!(ui::hit_diff(AREA, 10, 2, app.diff.len(), 0), Some(0));
-    assert_eq!(ui::hit_diff(AREA, 10, 3, app.diff.len(), 0), Some(1));
+    assert!(app.diff.rows.len() > 1);
+    assert_eq!(ui::hit_diff(AREA, 10, 2, app.diff.rows.len(), 0), Some(0));
+    assert_eq!(ui::hit_diff(AREA, 10, 3, app.diff.rows.len(), 0), Some(1));
 }
 
 #[test]
@@ -208,7 +226,7 @@ fn the_comments_list_flags_a_stale_comment() {
     let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
     app.reload().unwrap();
     app.focus = Focus::Diff;
-    app.diff_cursor = app.diff.iter().position(|l| l.kind == DiffLineKind::Added).unwrap();
+    app.diff_cursor = app.diff.rows.iter().position(|r| r.marker() == '+').unwrap();
     app.start_comment();
     for ch in "look here".chars() {
         app.input_push(ch);
@@ -228,7 +246,7 @@ fn the_comments_list_flags_a_stale_comment() {
 fn open_list_renders_the_comments_overlay() {
     let mut app = edited_app();
     app.focus = Focus::Diff;
-    app.diff_cursor = app.diff.iter().position(|l| l.kind == DiffLineKind::Added).unwrap();
+    app.diff_cursor = app.diff.rows.iter().position(|r| r.marker() == '+').unwrap();
     app.start_comment();
     for ch in "overlay note".chars() {
         app.input_push(ch);

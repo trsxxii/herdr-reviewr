@@ -10,10 +10,12 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
+use crate::diff::{DiffCache, FileDiff, Row};
 use crate::export::{ExportTarget, format_all};
-use crate::git::{self, DiffLine, DiffLineKind};
+use crate::git;
+use crate::highlight::Highlighter;
 use crate::logln;
-use crate::model::{ChangeKind, ChangedFile, Comment, CommentStore, Scope, Side};
+use crate::model::{ChangedFile, Comment, CommentStore, Scope, Side};
 
 /// Which pane has the keyboard.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -43,7 +45,12 @@ pub struct App {
     pub focus: Focus,
     pub files: Vec<ChangedFile>,
     pub file_cursor: usize,
-    pub diff: Vec<DiffLine>,
+    pub diff: FileDiff,
+    /// The rows actually shown: `diff.rows` with each fold collapsed to a marker or
+    /// expanded to its lines. The cursor, scroll, selection, and hit-testing index this.
+    pub visible: Vec<Row>,
+    /// Fold anchors (first-hidden-line numbers) currently expanded; survives a poll.
+    expanded_folds: HashSet<u32>,
     /// The file the open diff belongs to — the diff title, frozen with the diff
     /// while composing even if `file_cursor` drifts as the file list updates.
     pub diff_path: Option<String>,
@@ -58,6 +65,8 @@ pub struct App {
     pub input: String,
     pub status: String,
     pub should_quit: bool,
+    highlighter: Highlighter,
+    cache: DiffCache,
 }
 
 impl App {
@@ -69,7 +78,9 @@ impl App {
             focus: Focus::Files,
             files: Vec::new(),
             file_cursor: 0,
-            diff: Vec::new(),
+            diff: FileDiff::empty(),
+            visible: Vec::new(),
+            expanded_folds: HashSet::new(),
             diff_path: None,
             diff_cursor: 0,
             diff_scroll: 0,
@@ -80,6 +91,17 @@ impl App {
             input: String::new(),
             status: String::new(),
             should_quit: false,
+            highlighter: Highlighter::new(None),
+            cache: DiffCache::new(),
+        }
+    }
+
+    /// Rebuild the highlighter for the named theme and drop cached diffs so they
+    /// re-render in it. Unknown or unset names fall back to Catppuccin Mocha.
+    pub fn set_theme(&mut self, name: Option<&str>) {
+        if name.is_some() {
+            self.highlighter = Highlighter::new(name);
+            self.cache = DiffCache::new();
         }
     }
 
@@ -101,11 +123,9 @@ impl App {
             self.files.clear();
             self.file_cursor = 0;
             if !self.composing() {
-                self.diff.clear();
+                self.diff = FileDiff::empty();
                 self.diff_path = None;
-                self.diff_cursor = 0;
-                self.diff_scroll = 0;
-                self.select_anchor = None;
+                self.reset_diff_view();
             }
             return Ok(());
         }
@@ -127,32 +147,81 @@ impl App {
             if self.current_file().map(|f| f.path.as_str()) != self.diff_path.as_deref() {
                 self.reset_diff_view();
             }
-            self.load_diff()?;
+            self.load_diff();
         }
         Ok(())
     }
 
-    /// Load the selected file's diff, clamping the existing cursor/scroll into it so a
-    /// refresh keeps the reader's position rather than snapping to the top.
-    fn load_diff(&mut self) -> Result<()> {
-        let target = self.current_file().map(|f| (f.path.clone(), f.kind == ChangeKind::Untracked));
-        self.diff_path = target.as_ref().map(|(path, _)| path.clone());
-        self.diff = if let Some((path, untracked)) = target {
-            let raw =
-                git::file_diff(&self.repo, self.scope, &path, untracked, self.base.as_deref())?;
-            git::parse_diff(&raw)
-        } else {
-            Vec::new()
+    /// Build the selected file's diff from its old and new content, flatten folds into
+    /// the visible rows, then clamp the cursor/scroll so a refresh keeps the position.
+    fn load_diff(&mut self) {
+        let Some(file) = self.current_file().cloned() else {
+            self.diff = FileDiff::empty();
+            self.diff_path = None;
+            self.visible.clear();
+            self.reset_diff_view();
+            return;
         };
-        if self.diff.is_empty() {
+        self.diff_path = Some(file.path.clone());
+        let (old, new) = self.content_sides(&file);
+        self.diff = self.cache.get(file.path, &old, &new, &self.highlighter);
+        self.rebuild_visible();
+
+        if self.visible.is_empty() {
             self.reset_diff_view();
         } else {
-            let last = self.diff.len() - 1;
+            let last = self.visible.len() - 1;
             self.diff_cursor = self.diff_cursor.min(last);
             self.diff_scroll = self.diff_scroll.min(last);
             self.select_anchor = self.select_anchor.map(|a| a.min(last));
         }
-        Ok(())
+    }
+
+    /// Flatten `diff.rows` into `visible`: an expanded fold becomes its lines, a
+    /// collapsed fold stays a single marker row.
+    fn rebuild_visible(&mut self) {
+        self.visible = self
+            .diff
+            .rows
+            .iter()
+            .flat_map(|row| match row {
+                Row::Fold { lines }
+                    if row.fold_anchor().is_some_and(|a| self.expanded_folds.contains(&a)) =>
+                {
+                    lines.clone()
+                }
+                _ => vec![row.clone()],
+            })
+            .collect();
+    }
+
+    /// Expand the fold under the cursor, revealing its hidden lines. Expansion is
+    /// permanent for the session — an expand is taken as intentional, so there is no
+    /// collapse-back.
+    pub fn expand_fold(&mut self) {
+        let Some(anchor) = self.visible.get(self.diff_cursor).and_then(Row::fold_anchor) else {
+            return;
+        };
+        self.expanded_folds.insert(anchor);
+        self.rebuild_visible();
+    }
+
+    /// The old and new content of `file` for the current scope: old from `HEAD` (or the
+    /// merge-base on the branch scope), new from the worktree (or `HEAD` on branch).
+    fn content_sides(&self, file: &ChangedFile) -> (String, String) {
+        let path = file.path.as_str();
+        match self.scope {
+            Scope::Uncommitted => {
+                let old = git::file_content(&self.repo, "HEAD", path);
+                let new = worktree_content(&self.repo, path);
+                (old, new)
+            }
+            Scope::Branch => {
+                let mb = git::merge_base(&self.repo, self.base.as_deref());
+                let old = mb.map(|m| git::file_content(&self.repo, &m, path)).unwrap_or_default();
+                (old, git::file_content(&self.repo, "HEAD", path))
+            }
+        }
     }
 
     /// Snap the diff view back to the top, clearing any pending selection.
@@ -165,7 +234,7 @@ impl App {
     /// Keep `diff_scroll` so the cursor stays within a `height`-row viewport, scrolling
     /// only when the cursor would leave it. Called once per frame before drawing.
     pub fn clamp_diff_scroll(&mut self, height: usize) {
-        if height == 0 || self.diff.is_empty() {
+        if height == 0 || self.visible.is_empty() {
             self.diff_scroll = 0;
             return;
         }
@@ -174,7 +243,7 @@ impl App {
         } else if self.diff_cursor >= self.diff_scroll + height {
             self.diff_scroll = self.diff_cursor + 1 - height;
         }
-        self.diff_scroll = self.diff_scroll.min(self.diff.len().saturating_sub(height));
+        self.diff_scroll = self.diff_scroll.min(self.visible.len().saturating_sub(height));
     }
 
     /// Switch the changeset scope and reload. A no-op while composing, so a comment
@@ -205,13 +274,13 @@ impl App {
                     self.file_cursor = step(self.file_cursor, delta, self.files.len());
                     if self.file_cursor != prev {
                         self.reset_diff_view();
-                        self.load_diff()?;
+                        self.load_diff();
                     }
                 }
             }
             Focus::Diff => {
-                if !self.diff.is_empty() {
-                    self.diff_cursor = step(self.diff_cursor, delta, self.diff.len());
+                if !self.visible.is_empty() {
+                    self.diff_cursor = step(self.diff_cursor, delta, self.visible.len());
                 }
             }
         }
@@ -224,7 +293,7 @@ impl App {
             self.focus = Focus::Files;
             self.file_cursor = index;
             self.reset_diff_view();
-            self.load_diff()?;
+            self.load_diff();
         }
         Ok(())
     }
@@ -232,14 +301,14 @@ impl App {
     /// Move the diff cursor by `delta` lines (page keys, mouse wheel) regardless of
     /// which pane is focused; the sticky scroll follows. Does not steal focus.
     pub fn scroll_diff(&mut self, delta: isize) {
-        if !self.diff.is_empty() {
-            self.diff_cursor = step(self.diff_cursor, delta, self.diff.len());
+        if !self.visible.is_empty() {
+            self.diff_cursor = step(self.diff_cursor, delta, self.visible.len());
         }
     }
 
     /// Extend a mouse drag-selection to the diff line at `index`, anchoring on first drag.
     pub fn drag_select_to(&mut self, index: usize) {
-        if index < self.diff.len() {
+        if index < self.visible.len() {
             self.focus = Focus::Diff;
             if self.select_anchor.is_none() {
                 self.select_anchor = Some(self.diff_cursor);
@@ -250,7 +319,7 @@ impl App {
 
     /// Toggle a range-selection anchor at the current diff line.
     pub fn toggle_select(&mut self) {
-        if self.focus == Focus::Diff && !self.diff.is_empty() {
+        if self.focus == Focus::Diff && !self.visible.is_empty() {
             self.select_anchor = match self.select_anchor {
                 Some(_) => None,
                 None => Some(self.diff_cursor),
@@ -289,16 +358,16 @@ impl App {
         {
             self.file_cursor = fi;
             self.reset_diff_view();
-            let _ = self.load_diff();
+            self.load_diff();
         }
         // Only move the cursor when the open diff is actually the comment's file, so a
         // stale comment (file gone from the changeset) never jumps the cursor onto a
         // same-numbered line in a different file.
         if self.diff_path.as_deref() == Some(file.as_str())
-            && let Some(idx) = self.diff.iter().position(|dl| {
+            && let Some(idx) = self.visible.iter().position(|row| {
                 let no = match side {
-                    Side::New => dl.new_no,
-                    Side::Old => dl.old_no,
+                    Side::New => row.new_no(),
+                    Side::Old => row.old_no(),
                 };
                 no.is_some_and(|n| start <= n && n <= end)
             })
@@ -356,17 +425,17 @@ impl App {
         self.mode = Mode::Normal;
     }
 
-    /// Whether the selection has at least one line a comment can attach to
-    /// (added/removed/context, not a meta or hunk-header row).
+    /// Whether the selection has at least one content row a comment can attach to —
+    /// a fold marker does not qualify.
     fn has_anchorable_selection(&self) -> bool {
         let (lo, hi) = self.selection_range();
-        self.diff.get(lo..=hi).is_some_and(|s| s.iter().any(is_anchorable))
+        self.visible.get(lo..=hi).is_some_and(|s| s.iter().any(Row::is_content))
     }
 
     /// The `(side, start, end, snippet)` the current selection anchors to.
     fn selection_anchor(&self) -> Option<(Side, u32, u32, String)> {
         let (lo, hi) = self.selection_range();
-        let selected: Vec<&DiffLine> = self.diff.get(lo..=hi)?.iter().collect();
+        let selected: Vec<&Row> = self.visible.get(lo..=hi)?.iter().collect();
         anchor(&selected)
     }
 
@@ -395,15 +464,15 @@ impl App {
         }
     }
 
-    /// Diff-line indices on the open diff's file that a comment anchors to.
+    /// Row indices on the open diff's file that a comment anchors to.
     pub fn commented_lines(&self) -> HashSet<usize> {
         let Some(file) = self.diff_path.clone() else {
             return HashSet::new();
         };
-        self.diff
+        self.visible
             .iter()
             .enumerate()
-            .filter(|(_, dl)| self.store.iter().any(|c| c.file == file && line_in(c, dl)))
+            .filter(|(_, row)| self.store.iter().any(|c| c.file == file && line_in(c, row)))
             .map(|(i, _)| i)
             .collect()
     }
@@ -417,11 +486,11 @@ impl App {
         self.comment_under_cursor()
     }
 
-    /// The store index of a comment whose range covers the current diff line, if any.
+    /// The store index of a comment whose range covers the current diff row, if any.
     fn comment_under_cursor(&self) -> Option<usize> {
         let file = self.diff_path.as_deref()?;
-        let dl = self.diff.get(self.diff_cursor)?;
-        self.store.iter().position(|c| c.file == file && line_in(c, dl))
+        let row = self.visible.get(self.diff_cursor)?;
+        self.store.iter().position(|c| c.file == file && line_in(c, row))
     }
 
     pub fn delete_comment(&mut self) {
@@ -529,33 +598,38 @@ fn step(cur: usize, delta: isize, n: usize) -> usize {
     }
 }
 
-fn is_anchorable(l: &DiffLine) -> bool {
-    matches!(l.kind, DiffLineKind::Added | DiffLineKind::Removed | DiffLineKind::Context)
+/// The working-tree content of `path`, lossily as UTF-8; empty when the file is
+/// absent (a deletion) or unreadable.
+fn worktree_content(repo: &std::path::Path, path: &str) -> String {
+    std::fs::read(repo.join(path))
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .unwrap_or_default()
 }
 
-fn line_in(c: &Comment, dl: &DiffLine) -> bool {
+fn line_in(c: &Comment, row: &Row) -> bool {
     let no = match c.side {
-        Side::New => dl.new_no,
-        Side::Old => dl.old_no,
+        Side::New => row.new_no(),
+        Side::Old => row.old_no(),
     };
     no.is_some_and(|n| c.start <= n && n <= c.end)
 }
 
-/// Compute `(side, start, end, snippet)` for a selection of diff lines.
+/// Compute `(side, start, end, snippet)` for a selection of diff rows.
 ///
-/// New-side numbers win when present (added/context lines); a pure deletion
-/// anchors to the old side. Meta and hunk-header lines are dropped from the snippet.
-fn anchor(selected: &[&DiffLine]) -> Option<(Side, u32, u32, String)> {
-    let body: Vec<&DiffLine> = selected.iter().copied().filter(|l| is_anchorable(l)).collect();
-    if body.is_empty() {
+/// New-side numbers win when present (insertion/context rows); a pure deletion
+/// anchors to the old side. The snippet keeps each row's `+`/`−`/space marker.
+fn anchor(selected: &[&Row]) -> Option<(Side, u32, u32, String)> {
+    // A selection may straddle a collapsed fold; anchor only over its content rows.
+    let selected: Vec<&Row> = selected.iter().copied().filter(|r| r.is_content()).collect();
+    if selected.is_empty() {
         return None;
     }
-    let snippet = body.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join("\n");
-    let new_nos: Vec<u32> = body.iter().filter_map(|l| l.new_no).collect();
+    let snippet = selected.iter().map(|r| r.marker_text()).collect::<Vec<_>>().join("\n");
+    let new_nos: Vec<u32> = selected.iter().filter_map(|r| r.new_no()).collect();
     if let (Some(&min), Some(&max)) = (new_nos.iter().min(), new_nos.iter().max()) {
         return Some((Side::New, min, max, snippet));
     }
-    let old_nos: Vec<u32> = body.iter().filter_map(|l| l.old_no).collect();
+    let old_nos: Vec<u32> = selected.iter().filter_map(|r| r.old_no()).collect();
     let min = *old_nos.iter().min()?;
     let max = *old_nos.iter().max()?;
     Some((Side::Old, min, max, snippet))

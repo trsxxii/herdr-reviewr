@@ -12,17 +12,19 @@ pub struct Config {
     pub repo: PathBuf,
     pub poll: Duration,
     pub base: Option<String>,
+    pub theme: Option<String>,
 }
 
 impl Config {
     /// Parse `args` (the process arguments *after* argv\[0\]).
     ///
-    /// Recognises `--poll <ms>` (min 200, default 2000) and `--base <ref>`; the
-    /// first non-flag token is the repo path.
+    /// Recognises `--poll <ms>` (min 200, default 2000), `--base <ref>`, and
+    /// `--theme <name>`; the first non-flag token is the repo path.
     pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Self {
         let mut repo: Option<PathBuf> = None;
         let mut poll_ms: u64 = 2000;
         let mut base: Option<String> = None;
+        let mut theme: Option<String> = None;
         let mut it = args.into_iter();
         while let Some(arg) = it.next() {
             match arg.as_str() {
@@ -32,13 +34,14 @@ impl Config {
                     }
                 }
                 "--base" => base = it.next(),
+                "--theme" => theme = it.next(),
                 other if !other.starts_with('-') => repo = Some(PathBuf::from(other)),
                 _ => {}
             }
         }
         let repo =
             repo.or_else(|| std::env::current_dir().ok()).unwrap_or_else(|| PathBuf::from("."));
-        Self { repo, poll: Duration::from_millis(poll_ms.max(200)), base }
+        Self { repo, poll: Duration::from_millis(poll_ms.max(200)), base, theme }
     }
 
     /// Parse from the real process arguments.
