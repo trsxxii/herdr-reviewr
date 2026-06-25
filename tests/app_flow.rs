@@ -62,7 +62,7 @@ fn clamp(app: &mut App, viewport: usize) {
 }
 
 #[test]
-fn the_file_list_scrolls_to_keep_the_cursor_visible() {
+fn the_file_list_decouples_viewport_scroll_from_selection() {
     let r = Repo::init();
     for i in 0..20 {
         r.write(&format!("f{i:02}.txt"), "one\n");
@@ -73,36 +73,43 @@ fn the_file_list_scrolls_to_keep_the_cursor_visible() {
     }
     let mut app = app_on(&r);
     assert_eq!(app.file_rows.len(), 20);
-    assert_eq!(app.focus, Focus::Files);
-
     let viewport = 6;
-    // Cursor at the top: the window starts at the top.
-    app.clamp_file_scroll(viewport);
-    assert_eq!(app.file_scroll, 0);
 
-    // Drive the cursor to the last row; the window scrolls so it stays visible.
-    for _ in 0..19 {
+    // The first file is selected and its diff is open.
+    assert_eq!(app.file_cursor, 0);
+    let opened = app.diff_path.clone();
+    assert!(opened.is_some());
+
+    // Wheel-scrolling moves the viewport only: the selection and the open diff stay put,
+    // so browsing the list never reloads a diff (the performance fix). It may leave the
+    // cursor off screen — it is not yanked back.
+    app.scroll_files(5);
+    app.bound_file_scroll(viewport);
+    assert_eq!(app.file_scroll, 5);
+    assert_eq!(app.file_cursor, 0);
+    assert_eq!(app.diff_path, opened);
+    assert!(app.file_cursor < app.file_scroll);
+
+    // Moving the selection reveals it and opens that one file.
+    app.move_cursor(1).unwrap();
+    app.reveal_file_cursor(viewport);
+    assert_eq!(app.file_cursor, 1);
+    assert!(app.file_cursor >= app.file_scroll && app.file_cursor < app.file_scroll + viewport);
+    assert_ne!(app.diff_path, opened);
+
+    // Keyboard nav to the bottom keeps the cursor visible (reveal on each move).
+    for _ in 0..18 {
         app.move_cursor(1).unwrap();
     }
+    app.reveal_file_cursor(viewport);
     assert_eq!(app.file_cursor, 19);
-    app.clamp_file_scroll(viewport);
-    assert!(app.file_scroll <= app.file_cursor && app.file_cursor < app.file_scroll + viewport);
+    assert!(app.file_cursor < app.file_scroll + viewport);
     assert_eq!(app.file_scroll, 20 - viewport);
 
-    // Back to the top: the window follows back up, no blank tail.
-    for _ in 0..19 {
-        app.move_cursor(-1).unwrap();
-    }
-    app.clamp_file_scroll(viewport);
-    assert_eq!(app.file_scroll, 0);
-
-    // The wheel scrolls the file list regardless of focus (it routes by pointer, not focus).
-    app.focus = Focus::Diff;
-    app.scroll_files(5);
-    assert_eq!(app.file_cursor, 5);
-    app.clamp_file_scroll(viewport);
-    assert!(app.file_cursor < app.file_scroll + viewport);
-    assert_eq!(app.focus, Focus::Diff); // scrolling the list didn't steal focus
+    // An over-scroll is bounded so the window never shows a blank tail.
+    app.scroll_files(100);
+    app.bound_file_scroll(viewport);
+    assert_eq!(app.file_scroll, 20 - viewport);
 }
 
 /// The index of the first diff row with the given marker (`'+'`, `'-'`, or `' '`).

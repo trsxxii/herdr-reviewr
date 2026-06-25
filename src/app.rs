@@ -366,10 +366,17 @@ impl App {
         self.list_pct = pct.clamp(MIN_LIST_PCT, MAX_LIST_PCT);
     }
 
-    /// Keep `file_scroll` so `file_cursor` stays within a `viewport`-row window of the file
-    /// list, scrolling only when the cursor would leave it. File rows are height 1, so the
-    /// window is plain rows. Called once per frame.
-    pub fn clamp_file_scroll(&mut self, viewport: usize) {
+    /// Keep `file_scroll` within range (no blank tail) without moving it onto the cursor.
+    /// The file-list viewport is independent of the selection — the wheel scrolls it while
+    /// the cursor stays put — so this only bounds it; `reveal_file_cursor` follows the
+    /// cursor. Called once per frame. File rows are height 1, so the window is plain rows.
+    pub fn bound_file_scroll(&mut self, viewport: usize) {
+        self.file_scroll = self.file_scroll.min(self.file_rows.len().saturating_sub(viewport));
+    }
+
+    /// Scroll the file list so `file_cursor` is on screen, the minimal nudge. Called only
+    /// when the cursor moves (not every frame), so wheel-scrolling can leave it off screen.
+    pub fn reveal_file_cursor(&mut self, viewport: usize) {
         if viewport == 0 || self.file_rows.is_empty() {
             self.file_scroll = 0;
             return;
@@ -380,8 +387,6 @@ impl App {
         } else if cursor >= self.file_scroll + viewport {
             self.file_scroll = cursor + 1 - viewport;
         }
-        // Don't leave a blank tail when a lower top would still fill the window.
-        self.file_scroll = self.file_scroll.min(self.file_rows.len().saturating_sub(viewport));
     }
 
     /// Keep `diff_scroll` so the cursor's logical row fits in a `viewport`-display-row
@@ -540,14 +545,18 @@ impl App {
         }
     }
 
-    /// Scroll the file list by moving its cursor; the view follows via `clamp_file_scroll`,
-    /// mirroring `scroll_diff`. Focus-neutral, so the wheel scrolls the pane it is over
-    /// without stealing focus; opens the file the cursor lands on, like `j`/`k`.
+    /// Scroll the file list's viewport, leaving the selection and the open diff untouched
+    /// — so browsing the list with the wheel never reloads a diff. The upper bound is
+    /// applied each frame by `bound_file_scroll` (which knows the viewport).
     pub fn scroll_files(&mut self, delta: isize) {
-        if !self.file_rows.is_empty() {
-            self.file_cursor = step(self.file_cursor, delta, self.file_rows.len());
-            self.open_cursor_file();
+        if self.file_rows.is_empty() {
+            return;
         }
+        self.file_scroll = if delta >= 0 {
+            self.file_scroll.saturating_add(delta.unsigned_abs())
+        } else {
+            self.file_scroll.saturating_sub(delta.unsigned_abs())
+        };
     }
 
     /// Extend a mouse drag-selection to the diff line at `index`, anchoring on first drag.

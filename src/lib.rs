@@ -69,6 +69,9 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, poll: Duration) -> 
     let mut last_poll = Instant::now();
     let mut status_at = Instant::now();
     let mut last_status = String::new();
+    // Track the file cursor so the file list scrolls to it only when it moves — the wheel
+    // scrolls the viewport freely otherwise (selection and open diff stay put).
+    let mut last_file_cursor = usize::MAX;
     while !app.should_quit {
         // Expire a stale status line: restart the timer when the message changes, and clear
         // it once it has lingered past the TTL, so a notification doesn't stay up forever.
@@ -93,7 +96,12 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, poll: Duration) -> 
             viewport
         };
         app.clamp_diff_scroll(&ui::diff_row_heights(app, area), effective);
-        app.clamp_file_scroll(ui::file_viewport_height(area, app.list_pct));
+        let file_vp = ui::file_viewport_height(area, app.list_pct);
+        if app.file_cursor != last_file_cursor {
+            app.reveal_file_cursor(file_vp);
+            last_file_cursor = app.file_cursor;
+        }
+        app.bound_file_scroll(file_vp);
         terminal.draw(|f| ui::render(f, app))?;
         // Wake at the status-expiry boundary too, so it clears on time when idle.
         let poll_left = poll.saturating_sub(last_poll.elapsed());
@@ -204,7 +212,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
     }
 
     match (key.code, ctrl) {
-        // ctrl combos first, so they win over the plain `u`/`d` bindings below.
+        // ctrl combos first, so they win over the plain `u`/`d` bindings below. Half-page
+        // scroll moves the focused pane.
+        (Char('u'), true) if app.focus == Focus::Files => app.scroll_files(-HALF_PAGE),
+        (Char('d'), true) if app.focus == Focus::Files => app.scroll_files(HALF_PAGE),
         (Char('u'), true) => app.scroll_diff(-HALF_PAGE),
         (Char('d'), true) => app.scroll_diff(HALF_PAGE),
         (Char('q'), _) => app.should_quit = true,
