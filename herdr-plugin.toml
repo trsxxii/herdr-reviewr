@@ -1,25 +1,31 @@
-# herdr-review — herdr plugin manifest.
-#
-# Declares a right split pane that runs the review sidebar and a key to toggle it.
-# Modeled on the verified `herdr pane split --direction right --ratio 0.35
-# --no-focus` command (see docs/herdr-api-notes.md and specs/herdr-host.md).
-# Field names track herdr 0.7; adjust if your plugin schema differs.
+id = "reviewr"
+name = "reviewr"
+version = "0.1.0"
+min_herdr_version = "0.7.0"
+platforms = ["macos", "linux"]
+description = "Native terminal code-review sidebar for herdr."
 
-name = "herdr-review"
-description = "Browse an agent's changes and send comments back to chat."
+# Installs the `herdr-review` binary to ~/.cargo/bin on `herdr plugin install`; skipped by
+# `herdr plugin link` (install it yourself with `cargo install --path .`).
+[[build]]
+command = ["cargo", "install", "--path", "."]
 
-# The sidebar pane. herdr opens/closes it; the binary just runs inside.
-# It discovers the repo from the pane's cwd, normalized to the git top-level.
+# The sidebar pane runs the reviewr binary by name (resolved on PATH, since the pane's cwd is
+# the repo under review, not the plugin root); the toggle action places it as a right split.
 [[panes]]
-id = "review"
+id = "sidebar"
+title = "reviewr"
 placement = "split"
-direction = "right"
-ratio = 0.35
-focus = false
-command = "herdr-review"
+command = ["herdr-review"]
 
-# Toggle the sidebar on/off.
-[[keybindings]]
-key = "ctrl-r"
-action = "toggle-pane"
-pane = "review"
+[[actions]]
+id = "toggle"
+title = "reviewr: toggle sidebar"
+contexts = ["pane", "workspace"]
+command = ["bash", "herdr/sidebar.sh", "toggle"]
+
+# Auto-open the sidebar for a freshly created worktree.
+[[events]]
+on = "worktree.created"
+command = ["bash", "herdr/sidebar.sh", "open"]
+

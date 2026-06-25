@@ -1,65 +1,79 @@
-# herdr API notes (verified via wiring spike, herdr 0.7.0)
+# herdr API notes (verified against herdr 0.7.1)
 
-These were confirmed live against a running herdr session. They're the only
-herdr surface herdr-review depends on.
+The herdr surface herdr-review depends on, confirmed live. herdr-review ships as a
+herdr **plugin** (`../herdr-plugin.toml`); the binary runs inside a plugin pane.
 
-## Identify the workspace / agent
+## Plugin manifest (`herdr-plugin.toml`)
 
-`herdr agent list` → JSON, one entry per detected agent:
-```json
-{"agent":"claude","agent_status":"working","cwd":"/Users/persijano/me",
- "pane_id":"w8:p1","tab_id":"w8:t1","workspace_id":"w8","focused":true, ...}
+Top-level: `id`, `name`, `version`, `min_herdr_version`, `platforms` (required); `description`.
+
+```toml
+[[build]]                                   # run on `plugin install`, skipped by `plugin link`
+command = ["cargo", "install", "--path", "."]
+
+[[panes]]                                   # an openable pane entrypoint
+id = "sidebar"
+placement = "split"                         # overlay (default) | split | tab | zoomed
+command = ["herdr-review"]                  # see "pane command" below
+
+[[actions]]                                 # invokable command, bindable to a key
+id = "toggle"
+contexts = ["pane", "workspace"]
+command = ["bash", "herdr/sidebar.sh", "toggle"]
+
+[[events]]                                  # run a command on a herdr event
+on = "worktree.created"
+command = ["bash", "herdr/sidebar.sh", "open"]
 ```
-- `pane_id` here is the **target for "Add all to chat"**.
-- `agent_status` ∈ working | idle | blocked | done | unknown.
 
-Env inside a herdr pane: `HERDR_SOCKET_PATH`, `HERDR_BIN_PATH`,
-`HERDR_WORKSPACE_ID`, `HERDR_TAB_ID`, `HERDR_PANE_ID`.
+Lifecycle: `herdr plugin link <dir>` (local dev, no build) · `herdr plugin install <owner>/<repo>` ·
+`plugin list` · `plugin action invoke <action_id> --plugin <id>` · `plugin log list --plugin <id>`.
 
-## Open / close the sidebar pane (Foundation 1 ✅)
+## Open / close the sidebar pane
 
 ```
-herdr pane split --current --direction right --ratio 0.35 --no-focus --cwd <repo>
-herdr pane close <pane_id>
+herdr plugin pane open --plugin reviewr --entrypoint sidebar \
+  --placement split --direction right --target-pane <pane> --cwd <repo> --no-focus
+herdr plugin pane close <pane_id>
 ```
-New pane id is found via `herdr pane list` (workspace pane that isn't the agent's).
-For the plugin, declare `[[panes]] placement = "split"` and open via keybinding
-or a `workspace.focused` event hook (for "always present").
+- A `split` (or `zoomed`) pane **must** pass `--target-pane` (it implies the workspace); `--workspace` alone errors.
+- New pane id: `.result.plugin_pane.pane.pane_id`. The pane is auto-labeled with the entrypoint `title`.
+- **Pane command resolves against the pane's cwd (`--cwd`, the repo), not the plugin root** — a relative `./target/...` path fails, so invoke the binary by name (`herdr-review`) on `PATH` and install it via the `[[build]]` step.
 
-## Send text to a pane / agent (Foundation 2 ✅)
+## Runtime env (plugin commands and panes)
+
+`HERDR_BIN_PATH`, `HERDR_SOCKET_PATH`, `HERDR_PANE_ID`, `HERDR_TAB_ID`, `HERDR_WORKSPACE_ID`,
+`HERDR_PLUGIN_ID`, `HERDR_PLUGIN_ROOT`, `HERDR_PLUGIN_CONFIG_DIR`, `HERDR_PLUGIN_STATE_DIR`,
+`HERDR_PLUGIN_ENTRYPOINT_ID`, `HERDR_PLUGIN_CONTEXT_JSON`, and `HERDR_PLUGIN_EVENT_JSON` (events).
+herdr runs plugin commands with a minimal `PATH`; prepend common bin dirs for `jq`/`git`.
+
+- **Action context** (`HERDR_PLUGIN_CONTEXT_JSON`): `workspace_id`, `tab_id`, `focused_pane_id`,
+  `focused_pane_cwd`, `worktree:{repo_root, checkout_path, ...}`.
+- **`worktree.created` event** (`HERDR_PLUGIN_EVENT_JSON`): `.data.workspace.workspace_id`,
+  `.data.workspace.worktree.checkout_path`, and `.data.worktree.{path, branch, open_workspace_id}`.
+
+## Keybinding (user config, not the manifest)
+
+```toml
+[[keys.command]]
+key = "cmd+r"
+type = "plugin_action"
+command = "reviewr.toggle"     # <plugin_id>.<action_id>
+```
+`cmd+…` chords reach herdr; `alt+…` chords are composed into characters by macOS and don't register.
+
+## Resolve the agent / send comments
+
+`herdr agent list` → `{"result":{"agents":[ {pane_id, tab_id, workspace_id, agent_status, ...} ]}}`.
+- Send target = the agent in the sidebar's `HERDR_TAB_ID`, else the sole agent in its `HERDR_WORKSPACE_ID`.
+- **Caveat:** the reviewr pane itself is listed as an agent — exclude `HERDR_PANE_ID` or the real agent looks ambiguous.
 
 ```
-herdr pane send-text <pane_id> "<literal text>"   # no Enter
-herdr pane send-keys <pane_id> enter              # submit
-herdr agent send  <agent_pane> "<literal text>"   # agent-targeted, literal
+herdr agent send  <agent_pane> "<literal text>"   # writes input, no Enter
+herdr agent focus <agent_pane>                    # focus so the reviewer submits
 ```
-Confirmed the shell actually executes injected text (file side-effect test).
-**"Add all to chat"** = `agent send <agent_pane> "path:start-end - comment\n..."`.
 
-Caveat: `herdr pane read <id>` returns empty for an *unattended* pane (no client
-rendering that tab). Don't rely on it; our sidebar renders itself.
+## Diff scopes (plain git, no herdr)
 
-## Subscribe to events (Foundation 3 ✅)
-
-Connect the unix socket `$HERDR_SOCKET_PATH`, write newline-delimited JSON:
-```json
-{"id":"sub1","method":"events.subscribe","params":{"subscriptions":[
-  {"type":"pane.created"},
-  {"type":"pane.agent_status_changed","pane_id":"w8:p1"}
-]}}
-```
-Reply: `{"id":"sub1","result":{"type":"subscription_started"}}` then a stream of
-`{"data":{...},"type":...}` events. Useful types: `pane.agent_status_changed`
-(turn boundaries → snapshot worktree for "last turn"; refresh on idle/done),
-`pane.created`/`pane.closed`, `worktree.*`.
-
-CLI alternative for one-shot waits: `herdr wait agent-status <pane> --status idle`.
-
-## Diff scopes (plain git)
-
-- Uncommitted: `git -C <repo> diff` (+ `git status --porcelain` for untracked).
+- Uncommitted: `git -C <repo> diff` + `git status --porcelain -z --untracked-files=all`.
 - Branch: `git -C <repo> diff $(git merge-base origin/main HEAD)...HEAD`.
-- Last turn: on each `pane.agent_status_changed → idle/done`, snapshot the
-  worktree to a private ref (`git write-tree` w/ temp index → `update-ref
-  refs/herdr-turns/N`); diff `refs/herdr-turns/{N-1}` vs `{N}` (Conductor's
-  checkpointer pattern).

@@ -1,7 +1,7 @@
 ---
 Status: Current
 Created: 2026-06-23
-Last edited: 2026-06-23
+Last edited: 2026-06-25
 ---
 
 # herdr host
@@ -10,13 +10,16 @@ How herdr-review runs inside herdr, finds its repo, sends comments to the agent,
 
 ## Overview
 
-herdr hosts the binary in a right split pane. A thin herdr plugin (`herdr-plugin.toml`) declares the pane and a key to toggle it, and may open it on `workspace.focused` so it is always present. Opening and closing the pane is herdr's job; the binary just runs in it.
+herdr-review ships as a herdr plugin (`herdr-plugin.toml`): a `sidebar` pane entrypoint that runs the binary, a `toggle` action bound to a key, and a `worktree.created` event that auto-opens it for a freshly created worktree. Opening and closing the pane is herdr's job; the binary just runs in it.
 
-The verified host command (see `../docs/herdr-api-notes.md`):
+The plugin opens the sidebar as a right split (see `../docs/herdr-api-notes.md`):
 
 ```
-herdr pane split --direction right --ratio 0.35 --no-focus --cwd <repo>
+herdr plugin pane open --plugin reviewr --entrypoint sidebar \
+  --placement split --direction right --target-pane <pane> --cwd <repo> --no-focus
 ```
+
+The toggle script (`herdr/sidebar.sh`) opens the sidebar for the focused pane's repo, or closes it if one is already open in the workspace (tracked in `HERDR_PLUGIN_STATE_DIR`). It is bound in user config with `[[keys.command]] type = "plugin_action"`. The pane runs `herdr-review` **by name** — resolved on `PATH`, since the pane's cwd is the repo under review, not the plugin root — so the plugin's build step installs the binary with `cargo install --path .`.
 
 ### Repo discovery
 
@@ -50,6 +53,8 @@ These are not built here; the architecture only stays open to them.
 
 ## Decisions
 
+- A herdr plugin, not raw pane splits — the official plugin system (`herdr-plugin.toml` with pane entrypoints, actions, and events) gives the keybind, the right-split sidebar, and worktree autolaunch, and is installable/shareable via `herdr plugin install`. Rejected: a user-config `[[keys.command]]` shell script driving `herdr pane split`, which can't declare an entrypoint pane or an event hook.
+- Pane command by name, not a relative path — a split pane runs with the repo as its cwd, so `./target/release/herdr-review` resolves against the wrong directory; the binary is invoked as `herdr-review` on `PATH`.
 - Send via the herdr CLI, not the raw socket — `$HERDR_BIN_PATH agent send/focus/list` is the documented, transport-stable interface.
 - Browsing and clipboard need no herdr — only the agent-send export depends on herdr, so the review loop degrades gracefully without it.
 

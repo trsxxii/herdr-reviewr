@@ -31,8 +31,9 @@ fn herdr(args: &[&str]) -> Result<String> {
 pub fn resolve_agent_pane() -> Result<String> {
     let tab = env::var("HERDR_TAB_ID").ok();
     let ws = env::var("HERDR_WORKSPACE_ID").ok();
+    let me = env::var("HERDR_PANE_ID").ok();
     let agents = parse_agents(&herdr(&["agent", "list"])?)?;
-    pick_agent_pane(&agents, tab.as_deref(), ws.as_deref())
+    pick_agent_pane(&agents, tab.as_deref(), ws.as_deref(), me.as_deref())
         .context("no unambiguous agent in this tab or workspace")
 }
 
@@ -52,20 +53,32 @@ fn parse_agents(json: &str) -> Result<Vec<Value>> {
         .context("agent list has no agents array")
 }
 
-/// The pane to send to: the unique agent in this tab, else the sole workspace agent.
-fn pick_agent_pane(agents: &[Value], tab: Option<&str>, ws: Option<&str>) -> Option<String> {
-    sole_pane(agents, "tab_id", tab).or_else(|| sole_pane(agents, "workspace_id", ws))
+/// The pane to send to: the unique agent in this tab, else the sole workspace agent. `me` is
+/// our own pane, excluded throughout — herdr lists the reviewr sidebar as an agent, so without
+/// this the real agent looks ambiguous in our own tab and workspace.
+fn pick_agent_pane(
+    agents: &[Value],
+    tab: Option<&str>,
+    ws: Option<&str>,
+    me: Option<&str>,
+) -> Option<String> {
+    sole_pane(agents, "tab_id", tab, me).or_else(|| sole_pane(agents, "workspace_id", ws, me))
 }
 
-/// The `pane_id` of the unique agent whose `key` equals `want`; `None` if zero or many.
-fn sole_pane(agents: &[Value], key: &str, want: Option<&str>) -> Option<String> {
+/// The `pane_id` of the unique agent whose `key` equals `want`, ignoring our own pane `me`;
+/// `None` if zero or many remain.
+fn sole_pane(agents: &[Value], key: &str, want: Option<&str>, me: Option<&str>) -> Option<String> {
     let want = want?;
-    let mut matches = agents.iter().filter(|a| a.get(key).and_then(Value::as_str) == Some(want));
+    let pane = |a: &Value| a.get("pane_id").and_then(Value::as_str).map(String::from);
+    let mut matches = agents
+        .iter()
+        .filter(|a| a.get(key).and_then(Value::as_str) == Some(want))
+        .filter(|a| pane(a).as_deref() != me);
     let first = matches.next()?;
     if matches.next().is_some() {
         return None;
     }
-    first.get("pane_id").and_then(Value::as_str).map(String::from)
+    pane(first)
 }
 
 /// Write literal text into the agent pane's input, without submitting.
@@ -101,14 +114,25 @@ mod tests {
     #[test]
     fn sole_pane_picks_unique_match() {
         let agents = vec![agent("w8:p1", "w8:t1", "w8"), agent("w9:p1", "w9:t1", "w9")];
-        assert_eq!(sole_pane(&agents, "tab_id", Some("w8:t1")), Some("w8:p1".to_string()));
-        assert_eq!(sole_pane(&agents, "tab_id", Some("nope")), None);
+        assert_eq!(sole_pane(&agents, "tab_id", Some("w8:t1"), None), Some("w8:p1".to_string()));
+        assert_eq!(sole_pane(&agents, "tab_id", Some("nope"), None), None);
     }
 
     #[test]
     fn sole_pane_is_none_when_ambiguous() {
         let agents = vec![agent("w8:p1", "w8:t1", "w8"), agent("w8:p2", "w8:t2", "w8")];
-        assert_eq!(sole_pane(&agents, "workspace_id", Some("w8")), None);
+        assert_eq!(sole_pane(&agents, "workspace_id", Some("w8"), None), None);
+    }
+
+    #[test]
+    fn the_reviewr_pane_excludes_itself_so_the_real_agent_resolves() {
+        // herdr lists our own sidebar pane (w8:p5) as an agent alongside the real one (w8:p1),
+        // both in our tab. Excluding our pane leaves the real agent unambiguous.
+        let agents = vec![agent("w8:p1", "w8:t1", "w8"), agent("w8:p5", "w8:t1", "w8")];
+        assert_eq!(
+            pick_agent_pane(&agents, Some("w8:t1"), Some("w8"), Some("w8:p5")),
+            Some("w8:p1".to_string())
+        );
     }
 
     #[test]
@@ -125,20 +149,26 @@ mod tests {
     fn pick_prefers_the_tab_agent_over_the_workspace() {
         let agents = vec![agent("w8:p1", "w8:t1", "w8"), agent("w8:p2", "w8:t2", "w8")];
         // Both share workspace w8; our tab is w8:t2, so its pane wins.
-        assert_eq!(pick_agent_pane(&agents, Some("w8:t2"), Some("w8")), Some("w8:p2".to_string()));
+        assert_eq!(
+            pick_agent_pane(&agents, Some("w8:t2"), Some("w8"), None),
+            Some("w8:p2".to_string())
+        );
     }
 
     #[test]
     fn pick_falls_back_to_the_sole_workspace_agent() {
         let agents = vec![agent("w8:p1", "w8:t1", "w8")];
         // No agent shares our tab, but exactly one is in the workspace.
-        assert_eq!(pick_agent_pane(&agents, Some("w8:tX"), Some("w8")), Some("w8:p1".to_string()));
+        assert_eq!(
+            pick_agent_pane(&agents, Some("w8:tX"), Some("w8"), None),
+            Some("w8:p1".to_string())
+        );
     }
 
     #[test]
     fn pick_is_none_when_the_workspace_is_ambiguous() {
         let agents = vec![agent("w8:p1", "w8:t1", "w8"), agent("w8:p2", "w8:t2", "w8")];
         // Neither shares our tab and the workspace has two — refuse to guess.
-        assert_eq!(pick_agent_pane(&agents, Some("w8:tZ"), Some("w8")), None);
+        assert_eq!(pick_agent_pane(&agents, Some("w8:tZ"), Some("w8"), None), None);
     }
 }
