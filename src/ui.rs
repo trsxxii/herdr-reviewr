@@ -610,6 +610,7 @@ mod cat {
     pub(super) const SURFACE1: Color = Rgb(0x45, 0x47, 0x5a);
     pub(super) const SURFACE2: Color = Rgb(0x58, 0x5b, 0x70);
     pub(super) const OVERLAY0: Color = Rgb(0x6c, 0x70, 0x86);
+    pub(super) const OVERLAY1: Color = Rgb(0x7f, 0x84, 0x9c);
     // Text.
     pub(super) const SUBTEXT0: Color = Rgb(0xa6, 0xad, 0xc8);
     pub(super) const TEXT: Color = Rgb(0xcd, 0xd6, 0xf4);
@@ -628,9 +629,11 @@ const INS_BG: Color = Color::Rgb(0x22, 0x33, 0x2b);
 // Word-emphasis fills — a brighter shade of the row tint over the changed words.
 const EMPH_DEL_BG: Color = Color::Rgb(0x6e, 0x34, 0x46);
 const EMPH_INS_BG: Color = Color::Rgb(0x30, 0x55, 0x3f);
+// A passive < selection < cursor brightness ramp: the cursor is the focal point, an active
+// selection outranks a passive fold separator.
 const CURSOR_BG: Color = cat::SURFACE2;
-const SEL_BG: Color = cat::SURFACE0;
-const FOLD_BG: Color = cat::SURFACE1;
+const SEL_BG: Color = cat::SURFACE1;
+const FOLD_BG: Color = cat::SURFACE0;
 
 /// The line-number column width for a diff of `rows` lines.
 fn gutter_width(rows: usize) -> usize {
@@ -691,7 +694,8 @@ fn render_row(row: &Row, layout: RowLayout, state: RowState) -> Vec<Line<'static
         return vec![line.style(Style::default().bg(bg).add_modifier(Modifier::BOLD))];
     }
     let num = row.new_no().or_else(|| row.old_no()).map_or(String::new(), |n| n.to_string());
-    let num_color = if commented { cat::YELLOW } else { cat::OVERLAY0 };
+    // Line numbers sit a step brighter than other dim chrome so they stay legible while read.
+    let num_color = if commented { cat::YELLOW } else { cat::OVERLAY1 };
     let (bar, bar_color) = match row.marker() {
         '-' => ("▌", cat::RED),
         '+' => ("▌", cat::GREEN),
@@ -912,11 +916,15 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         }
     };
     let line = Line::from(vec![
-        Span::styled(left, Style::default().fg(cat::TEXT).bg(cat::SURFACE0)),
+        Span::styled(left, Style::default().fg(cat::TEXT)),
         Span::styled(format!(" {mid}"), Style::default().fg(cat::PEACH)),
         Span::styled(format!("  {hints}"), Style::default().fg(cat::OVERLAY0)),
     ]);
-    frame.render_widget(Paragraph::new(line).wrap(Wrap { trim: false }), area);
+    // Fill the whole footer with the surface bar, matching the header band.
+    frame.render_widget(
+        Paragraph::new(line).style(Style::default().bg(cat::SURFACE0)).wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
 fn render_comments_list(frame: &mut Frame, app: &App, area: Rect) {
