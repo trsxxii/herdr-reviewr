@@ -383,6 +383,10 @@ fn file_and_diff_clicks_map_to_row_indices() {
     // With the list scrolled down, the top visible row maps to that scrolled-to index.
     assert_eq!(ui::hit_file(AREA, app.list_pct, 120, 2, 50, 7), Some(7));
     assert_eq!(ui::hit_file(AREA, app.list_pct, 120, 3, 50, 7), Some(8));
+    // The wheel routes by pointer: a column in the right pane is "in" the file list,
+    // one in the left (diff) pane is not.
+    assert!(ui::in_files_pane(AREA, app.list_pct, 120, 3));
+    assert!(!ui::in_files_pane(AREA, app.list_pct, 10, 3));
     // Left pane: diff rows map top-down to diff-line indices.
     assert!(app.visible.len() > 1);
     let heights = ui::diff_row_heights(&app, AREA);

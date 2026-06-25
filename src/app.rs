@@ -540,6 +540,16 @@ impl App {
         }
     }
 
+    /// Scroll the file list by moving its cursor; the view follows via `clamp_file_scroll`,
+    /// mirroring `scroll_diff`. Focus-neutral, so the wheel scrolls the pane it is over
+    /// without stealing focus; opens the file the cursor lands on, like `j`/`k`.
+    pub fn scroll_files(&mut self, delta: isize) {
+        if !self.file_rows.is_empty() {
+            self.file_cursor = step(self.file_cursor, delta, self.file_rows.len());
+            self.open_cursor_file();
+        }
+    }
+
     /// Extend a mouse drag-selection to the diff line at `index`, anchoring on first drag.
     pub fn drag_select_to(&mut self, index: usize) {
         if index < self.visible.len() {

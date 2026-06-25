@@ -95,6 +95,14 @@ fn the_file_list_scrolls_to_keep_the_cursor_visible() {
     }
     app.clamp_file_scroll(viewport);
     assert_eq!(app.file_scroll, 0);
+
+    // The wheel scrolls the file list regardless of focus (it routes by pointer, not focus).
+    app.focus = Focus::Diff;
+    app.scroll_files(5);
+    assert_eq!(app.file_cursor, 5);
+    app.clamp_file_scroll(viewport);
+    assert!(app.file_cursor < app.file_scroll + viewport);
+    assert_eq!(app.focus, Focus::Diff); // scrolling the list didn't steal focus
 }
 
 /// The index of the first diff row with the given marker (`'+'`, `'-'`, or `' '`).

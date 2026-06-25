@@ -216,6 +216,9 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
         (Enter, _) => app.activate_file_row(),
         (Char('j') | Down, _) => app.move_cursor(1)?,
         (Char('k') | Up, _) => app.move_cursor(-1)?,
+        // Page keys scroll the focused pane.
+        (PageDown, _) if app.focus == Focus::Files => app.scroll_files(PAGE),
+        (PageUp, _) if app.focus == Focus::Files => app.scroll_files(-PAGE),
         (PageDown, _) => app.scroll_diff(PAGE),
         (PageUp, _) => app.scroll_diff(-PAGE),
         (Char('w'), _) => app.toggle_wrap(),
@@ -297,8 +300,15 @@ fn handle_mouse(app: &mut App, m: MouseEvent, area: Rect) -> Result<()> {
             }
         }
         MouseEventKind::Up(MouseButton::Left) => app.resizing = false,
-        // The wheel scrolls the diff vertically; horizontal scroll is keyboard-only (`←`/`→`),
-        // since multiplexers don't reliably deliver horizontal wheel events.
+        // The wheel scrolls whichever pane it is over (the file list or the diff) vertically;
+        // horizontal scroll is keyboard-only (`←`/`→`), since multiplexers don't reliably
+        // deliver horizontal wheel events.
+        MouseEventKind::ScrollDown if ui::in_files_pane(area, app.list_pct, m.column, m.row) => {
+            app.scroll_files(3);
+        }
+        MouseEventKind::ScrollUp if ui::in_files_pane(area, app.list_pct, m.column, m.row) => {
+            app.scroll_files(-3);
+        }
         MouseEventKind::ScrollDown => app.scroll_diff(3),
         MouseEventKind::ScrollUp => app.scroll_diff(-3),
         _ => {}

@@ -106,6 +106,14 @@ pub fn file_viewport_height(area: Rect, list_pct: u16) -> usize {
     inner_rect(files_area).height as usize
 }
 
+/// Whether `(col, row)` falls in the file pane, so the wheel scrolls the list it is over.
+#[must_use]
+pub fn in_files_pane(area: Rect, list_pct: u16, col: u16, row: u16) -> bool {
+    let rows = vrows(area);
+    let (_, files_area) = body_split(&rows, list_pct);
+    contains(files_area, col, row)
+}
+
 /// The logical diff-row index a click at `(col, row)` lands on, or `None` if outside the
 /// diff pane. `heights` (display rows per logical row) and `diff_scroll` reproduce the
 /// painted window, so a click on any display line of a wrapped row maps to that row.
