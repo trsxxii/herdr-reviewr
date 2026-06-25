@@ -221,10 +221,9 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
         (Char('q'), _) => app.should_quit = true,
         (Char('r'), _) => app.reload()?,
         (Tab, _) => app.toggle_focus(),
-        // In the diff, `enter` expands a fold under the cursor; in the file list it opens
-        // a file (dropping focus into the diff) or toggles a directory.
+        // `enter` expands a fold in the diff. In the file list it does nothing: selecting a
+        // file already opens it, `←`/`→` toggle a directory, and `tab` switches focus.
         (Enter, _) if app.focus == Focus::Diff => app.expand_fold(),
-        (Enter, _) => app.activate_file_row(),
         (Char('j') | Down, _) => app.move_cursor(1)?,
         (Char('k') | Up, _) => app.move_cursor(-1)?,
         // Page keys scroll the focused pane.

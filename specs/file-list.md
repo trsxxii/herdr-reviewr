@@ -50,7 +50,7 @@ The list is a flat sequence of visible rows over the tree; a row is a directory 
 
 - The cursor selects a row; `j`/`k` and the arrows move it, skipping collapsed subtrees, and the list scrolls to keep it on screen. Moving onto a file opens its diff in the left pane.
 - The selection (what is open) is separate from the viewport (what is scrolled into view). The wheel scrolls the viewport on its own — the selection and the open diff stay put, so browsing the list never reloads a diff — and the selection may scroll out of view until you move it again.
-- Activating a file row opens its diff in the left pane; activating a directory row toggles its `expanded` state.
+- A directory collapses or expands with `←` / `→` or a click; `tab` moves focus to the diff to navigate and comment. There is no `enter` activation in the list — selecting a file already opens it.
 - A click selects the row under it — a file opens, a directory toggles.
 - A poll preserves the selected file and which directories are expanded, matching them by path; if the selected file left the changeset, the cursor falls back to the open file, then the first file.
 

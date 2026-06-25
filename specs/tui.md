@@ -43,7 +43,6 @@ Every action has a keyboard binding. The mouse-relevant ones also work by click 
 | action | keyboard | mouse |
 |--------|----------|-------|
 | move the cursor in the focused pane — in the file list this selects a file and loads its diff | `j` / `k` / `↑` / `↓` | click a file row |
-| open the selected file's diff, or toggle the selected directory | `enter` | click a file or directory row |
 | collapse / expand the directory under the cursor | `←` / `→` | click the directory row |
 | switch focus between the file list and the diff | `tab` | click a pane |
 | scroll the focused pane (diff or file list) | `PageUp` / `PageDown` / `ctrl+u` / `ctrl+d` | wheel over the pane |

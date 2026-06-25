@@ -481,16 +481,6 @@ impl App {
         Ok(())
     }
 
-    /// Activate the file-list row under the cursor (`enter`): a directory toggles, a file
-    /// drops focus into its diff (already loaded by the cursor landing on it).
-    pub fn activate_file_row(&mut self) {
-        match self.file_rows.get(self.file_cursor).map(|r| &r.kind) {
-            Some(RowKind::Dir { .. }) => self.toggle_dir(),
-            Some(RowKind::File { .. }) => self.focus = Focus::Diff,
-            None => {}
-        }
-    }
-
     /// Collapse or expand the directory under the cursor, then rebuild the tree. The cursor
     /// stays on the directory row (still present, now toggled).
     fn toggle_dir(&mut self) {

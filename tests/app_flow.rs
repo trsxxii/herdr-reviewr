@@ -416,7 +416,7 @@ fn the_cursor_stays_on_a_folder_across_a_poll_and_toggle() {
     assert_eq!(app.diff_path, open, "the open diff is unchanged");
 
     // Collapsing then a poll keeps the cursor on the (now collapsed) folder.
-    app.activate_file_row(); // toggle the directory
+    app.collapse_dir();
     app.reload().unwrap();
     let dir_row = app.file_rows.iter().position(|r| r.dir_path() == Some("src")).unwrap();
     assert_eq!(app.file_cursor, dir_row, "cursor stays on the folder after collapse + poll");
