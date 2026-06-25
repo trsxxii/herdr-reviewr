@@ -152,6 +152,24 @@ fn untracked_paths_with_spaces_survive_verbatim() {
 }
 
 #[test]
+fn untracked_files_in_a_new_directory_are_listed_individually() {
+    // git collapses a brand-new directory to one `dir/` entry by default; `--untracked-files=all`
+    // expands it so each new file is reviewable, not the directory.
+    let r = Repo::init();
+    r.write("seed.rs", "x\n");
+    r.commit_all("init");
+    r.write("docs/new/a.md", "alpha\n");
+    r.write("docs/new/b.md", "beta\n");
+
+    let files = changed_files(r.path(), Scope::Uncommitted, None).unwrap();
+    let by = by_path(&files);
+    assert!(by.contains_key("docs/new/a.md"), "the file is listed, not the directory");
+    assert!(by.contains_key("docs/new/b.md"));
+    assert!(!by.contains_key("docs/new/"), "the bare directory is not an entry");
+    assert_eq!(by["docs/new/a.md"].kind, ChangeKind::Untracked);
+}
+
+#[test]
 fn a_binary_change_lists_with_zero_stats() {
     let r = Repo::init();
     r.write("blob.bin", "\0\0seed\0\0");

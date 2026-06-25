@@ -165,11 +165,13 @@ pub fn changed_files(repo: &Path, scope: Scope, base: Option<&str>) -> Result<Ve
     Ok(files)
 }
 
-/// Untracked file paths from `git status --porcelain -z`. The `-z` form is NUL-delimited
-/// and never quotes or escapes a path, so names with spaces or special characters survive
-/// verbatim — no trimming or unquoting.
+/// Untracked file paths from `git status --porcelain -z --untracked-files=all`. The `-z`
+/// form is NUL-delimited and never quotes or escapes a path, so names with spaces or special
+/// characters survive verbatim — no trimming or unquoting. `--untracked-files=all` lists each
+/// file inside a brand-new directory instead of collapsing it to one `dir/` entry, so the
+/// files in a freshly-created folder are reviewable individually (.gitignore still applies).
 fn untracked(repo: &Path) -> Result<Vec<String>> {
-    let status = git(repo, &["status", "--porcelain", "-z"])?;
+    let status = git(repo, &["status", "--porcelain", "-z", "--untracked-files=all"])?;
     let mut out = Vec::new();
     let mut it = status.split('\0');
     while let Some(entry) = it.next() {
