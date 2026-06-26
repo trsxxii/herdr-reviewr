@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-06-26
+
+### Fixed
+- Corrected the keybinding example in the herdr API notes: the `plugin_action`
+  command is `persiyanov.reviewr.toggle` (the manifest `id`), not `reviewr.toggle`
+  (the `name`). The wrong id resolves to a non-existent plugin and herdr reports
+  "plugin action not found".
+
 ## [0.1.0] — 2026-06-26
 
 First public release as the herdr plugin `persiyanov.reviewr`.
