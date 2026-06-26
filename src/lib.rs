@@ -51,6 +51,7 @@ pub fn run() -> Result<()> {
     logln!("start repo={} poll={:?} base={:?}", repo.display(), cfg.poll, cfg.base);
     let mut app = App::new(repo, Scope::Uncommitted, cfg.base.clone());
     app.set_theme(cfg.theme.as_deref());
+    app.config_path.clone_from(&cfg.config_path);
     if let Some(wrap) = cfg.wrap {
         app.wrap = wrap;
     }

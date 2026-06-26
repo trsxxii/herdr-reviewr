@@ -41,10 +41,20 @@ A scope selects which changes the `Changes` view shows and which files `All file
 | scope | means | source |
 |-------|-------|--------|
 | `uncommitted` | staged and unstaged changes vs `HEAD`, plus untracked files | `git diff HEAD` and `git status --porcelain` |
-| `branch` | `HEAD` vs the merge-base with the base branch | `git diff $(git merge-base <base> HEAD)...HEAD` |
+| `branch` | the worktree vs the merge-base with the base branch — every change this branch carries over its base, committed and uncommitted | `git diff $(git merge-base <base> HEAD)` plus `git status --porcelain` for untracked files |
 | `last-turn` | the worktree vs the turn baseline — what the agent changed in its most recent change-producing turn, including untracked files | `git diff <turn-baseline> <worktree snapshot>` |
 
 The base branch is `origin/main`, falling back to `origin/master`, then `main`, then `master`. It is overridable by config or flag.
+
+Because the base is an ancestor of `HEAD`, `branch` is a superset of `uncommitted`: it shows the same working-tree changes plus the branch's committed work, with the merge-base as the old side of every diff. So when nothing is committed past the base, `branch` and `uncommitted` coincide rather than `branch` going empty. `last-turn` is not nested in either — it is anchored to a point in time (the turn snapshot), so it can show work the agent has since committed, which `uncommitted` does not.
+
+### Ignored paths
+
+Every scope respects `.gitignore`: a path git ignores is not a change. The keep list (`config.md`) is the one exception — an ignored path matching a `keep` pattern is treated as untracked, so it lists as an addition wherever an untracked file would.
+
+- So build output (`target/`, `node_modules/`) never enters `Changes`, while an opted-in path like `docs/plans/` shows as a change across all three scopes.
+- A kept path lists exactly as an untracked file does — `untracked` kind, all additions, anchored on `side: new`.
+- This gates `Changes` only; `All files` lists every file regardless, ignored dimmed (`file-list.md`).
 
 ### Turn baseline
 
@@ -154,6 +164,8 @@ Export is the only side effect, and comments are in-memory.
 - Flag stale comments, never auto-drop — silently losing a comment destroys trust and forces you to wait for the agent to stop; a comment is removed only by export or delete.
 - Send to the agent, with clipboard secondary — the fill-input-and-focus flow is the asked-for path; clipboard stays for paste-anywhere and remote.
 - One Send, not send-one vs send-all — the workflow is "write a few comments, then hand them over"; a per-comment send is a needless choice on the hot path, so `Send` always takes the whole set (`Copy` likewise).
+- Kept ignored paths count as changes; other ignored paths never do — gitignore conflates build output with intentional non-versioned files (plans, generated configs), so the keep list (`config.md`) opts specific ignored paths into `Changes` without dragging in build churn. Rejected: listing all ignored files in `Changes`; a built-in build-dir skip-list, which is a guess that is always slightly wrong.
+- `branch` spans the worktree, not only commits — it diffs the merge-base against the working tree (untracked included), so it shows every change the branch carries over its base and is a superset of `uncommitted`. A committed-only range goes empty whenever the agent's work is uncommitted — the common case in live review, and the state the scope most needs to show. Rejected: `merge-base...HEAD`, committed-only.
 - `last-turn` anchors to the most recent change-producing turn, not every turn — re-baselining on every turn start would blank the view after any text-only turn (a question, a plan); holding the baseline until a turn actually edits a file keeps the last real diff on screen. Rejected: re-baseline on every idle→working edge.
 - A comment can anchor to file content, not only a diff — the `All files` tab comments on code the agent did not touch (a missed call site), so an anchor may be plain content with `side` always `new`. Rejected: restricting comments to changed lines.
 

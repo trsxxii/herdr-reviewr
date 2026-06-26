@@ -6,6 +6,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-06-26
+
+### Added
+- **`config.toml`** — a reviewr config file in herdr's per-plugin config dir, re-read on
+  refresh. Its `keep` list (gitignore globs) opts git-ignored paths into the **Changes** tab as
+  untracked, so an ignored-but-intentional file (a plan, a sample env) is reviewable while build
+  output stays out.
+- **All files** now lists git-ignored paths too, dimmed; a wholly-ignored directory
+  (`target/`, `node_modules/`) is one collapsed row that loads its contents only on expand.
+
+### Changed
+- **`branch` scope** now diffs the worktree against the merge-base with the base branch — a
+  superset of `uncommitted` that adds the branch's committed work — instead of the committed-only
+  `merge-base...HEAD`. It no longer shows empty when the branch's changes are uncommitted.
+
 ## [0.1.1] — 2026-06-26
 
 ### Fixed

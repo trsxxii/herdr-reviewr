@@ -19,6 +19,8 @@ pub struct Row {
     /// joined with `/` (single-child directories fold into their child).
     pub name: String,
     pub kind: RowKind,
+    /// Whether git ignores this row's path — rendered dimmed in `All files` (file-list.md).
+    pub ignored: bool,
 }
 
 /// What a [`Row`] is: a directory (togglable) or a file (opens the left pane).
@@ -54,6 +56,11 @@ pub struct Entry {
     pub path: String,
     pub previous_path: Option<String>,
     pub annotation: Option<Annotation>,
+    /// Whether git ignores this path — drives dimming in `All files` (file-list.md).
+    pub ignored: bool,
+    /// A wholly-ignored directory placeholder whose children load lazily on expand; never
+    /// set on a `Changes` entry.
+    pub is_dir: bool,
 }
 
 impl Entry {
@@ -63,6 +70,8 @@ impl Entry {
             path: f.path.clone(),
             previous_path: f.previous_path.clone(),
             annotation: Some(Annotation::from(f)),
+            ignored: false,
+            is_dir: false,
         }
     }
 }
@@ -91,6 +100,9 @@ impl Row {
 struct Dir {
     dirs: BTreeMap<String, Dir>,
     files: BTreeMap<String, usize>,
+    /// Set when a wholly-ignored directory placeholder created this node — its row renders
+    /// dimmed (file-list.md). A directory derived from tracked file paths stays `false`.
+    ignored: bool,
 }
 
 /// Flatten `entries` into the visible tree rows. `default_expanded` sets a directory's
@@ -105,16 +117,26 @@ pub fn build<S: BuildHasher>(
 ) -> Vec<Row> {
     let mut root = Dir::default();
     for (i, e) in entries.iter().enumerate() {
-        insert(&mut root, &e.path, i);
+        insert(&mut root, e, i);
     }
     let mut rows = Vec::new();
     flatten(&mut rows, &root, "", 0, toggled, default_expanded, entries);
     rows
 }
 
-/// Insert `path`'s file at `index` into the tree, creating directories along the way.
-fn insert(root: &mut Dir, path: &str, index: usize) {
-    let mut segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+/// Insert `entry` at `index` into the tree, creating directories along the way. A directory
+/// placeholder (`is_dir`) creates its node and marks it ignored, holding no file — its
+/// children arrive later when the app expands it (file-list.md).
+fn insert(root: &mut Dir, entry: &Entry, index: usize) {
+    let mut segments: Vec<&str> = entry.path.split('/').filter(|s| !s.is_empty()).collect();
+    if entry.is_dir {
+        let mut cur = root;
+        for seg in segments {
+            cur = cur.dirs.entry(seg.to_string()).or_default();
+        }
+        cur.ignored = entry.ignored;
+        return;
+    }
     let Some(base) = segments.pop() else { return };
     let mut cur = root;
     for seg in segments {
@@ -144,6 +166,7 @@ fn flatten<S: BuildHasher>(
                 depth,
                 name: display,
                 kind: RowKind::Dir { path: path.clone(), expanded },
+                ignored: node.ignored,
             });
             if expanded {
                 flatten(rows, node, &path, depth + 1, toggled, default_expanded, entries);
@@ -181,6 +204,7 @@ fn file_row(depth: usize, name: String, index: usize, entries: &[Entry]) -> Row 
         depth,
         name,
         kind: RowKind::File { index, annotation: entries[index].annotation.clone() },
+        ignored: entries[index].ignored,
     }
 }
 
@@ -285,8 +309,48 @@ mod tests {
     #[test]
     fn an_unannotated_entry_renders_without_a_marker() {
         // An `All files` entry from a bare path renders without a marker or stats.
-        let entry = Entry { path: "a.rs".into(), previous_path: None, annotation: None };
+        let entry = Entry {
+            path: "a.rs".into(),
+            previous_path: None,
+            annotation: None,
+            ignored: false,
+            is_dir: false,
+        };
         let rows = build(&[entry], &HashSet::new(), false);
         assert!(matches!(rows[0].kind, RowKind::File { annotation: None, .. }));
+    }
+
+    fn ignored_dir(path: &str) -> Entry {
+        Entry {
+            path: path.into(),
+            previous_path: None,
+            annotation: None,
+            ignored: true,
+            is_dir: true,
+        }
+    }
+
+    #[test]
+    fn an_ignored_dir_placeholder_renders_as_a_collapsed_ignored_row() {
+        // A wholly-ignored directory shows as one dimmed dir row, with no children until the
+        // app loads them on expand (file-list.md).
+        let rows = build(&[ignored_dir("target")], &HashSet::new(), false);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].ignored, "the placeholder row is marked ignored (dimmed)");
+        assert!(matches!(rows[0].kind, RowKind::Dir { expanded: false, .. }));
+    }
+
+    #[test]
+    fn an_ignored_file_marks_its_row_ignored() {
+        let entry = Entry {
+            path: "build.log".into(),
+            previous_path: None,
+            annotation: None,
+            ignored: true,
+            is_dir: false,
+        };
+        let rows = build(&[entry], &HashSet::new(), false);
+        assert!(rows[0].ignored, "an ignored file row is dimmed");
+        assert!(matches!(rows[0].kind, RowKind::File { .. }));
     }
 }

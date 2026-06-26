@@ -13,7 +13,9 @@ A persistent split pane beside your agent, pointed at one git worktree:
 - **Changes tab** — the changed files for the active scope, with `+/-` stats; pick a file to
   read its syntax-highlighted diff.
 - **All files tab** — browse the whole worktree tree, not just what changed; the same diff pane
-  renders any file's current content.
+  renders any file's current content. Git-ignored paths show too, dimmed — a wholly-ignored
+  directory (`target/`, `node_modules/`) is one collapsed row that loads its contents only when
+  you expand it.
 - **Comments** — select a line range in a diff, write a comment, repeat. The comment list is a
   surface of its own.
 
@@ -28,8 +30,9 @@ It **never edits your worktree** and sends nothing on its own. Its only git writ
 ### Diff scopes
 
 - **uncommitted** — working tree vs `HEAD` (staged, unstaged, and untracked).
-- **branch** — `HEAD` vs the merge-base with the base branch (`origin/main` → `origin/master`
-  → `main` → `master`, or `--base`).
+- **branch** — the working tree vs the merge-base with the base branch (`origin/main` →
+  `origin/master` → `main` → `master`, or `--base`); a superset of **uncommitted** that adds the
+  branch's committed work.
 - **last turn** — only what the agent changed since its most recent turn started (see
   [Limitations](#limitations)).
 
@@ -59,14 +62,18 @@ pane command looks for it — `$HERDR_PLUGIN_ROOT/bin/herdr-reviewr`:
 ```bash
 git clone https://github.com/persiyanov/herdr-reviewr
 cd herdr-reviewr
-cargo build --release
-mkdir -p bin && cp target/release/herdr-reviewr bin/
+just install   # build release → bin/herdr-reviewr, ad-hoc re-signed on macOS
 herdr plugin link .
 ```
 
+`just install` (re)places the binary with a fresh file and ad-hoc re-signs it. On Apple Silicon
+that matters: overwriting a code-signed binary in place invalidates its signature, and macOS then
+SIGKILLs it at launch — so a plain `cp target/release/herdr-reviewr bin/` makes the sidebar pane
+open and close instantly. Re-run `just install` after each rebuild to refresh the linked binary.
+
 ## Configuration
 
-CLI flags on the pane command (there is no config file yet):
+CLI flags on the pane command:
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
@@ -74,6 +81,24 @@ CLI flags on the pane command (there is no config file yet):
 | `--base <ref>` | auto | base branch for `branch` scope |
 | `--theme <name>` | Catppuccin Mocha | **syntax** theme (structural UI colors are fixed) |
 | `--wrap` | off | soft-wrap long diff lines |
+
+### `config.toml`
+
+reviewr reads a `config.toml` from herdr's per-plugin config dir — find it with
+`herdr plugin config-dir persiyanov.reviewr` (typically
+`~/.config/herdr/plugins/config/persiyanov.reviewr/`). It is re-read on `r`.
+
+```toml
+# Ignored paths that should still be reviewable. gitignore glob syntax.
+keep = [
+  "docs/plans/",
+  ".env.example",
+]
+```
+
+`keep` opts gitignored paths into the **Changes** tab as if they were untracked, so an
+ignored-but-intentional file (a plan, a sample env) shows up for review while build output
+stays out. It is global to every repo you open and is never committed.
 
 ## Limitations
 

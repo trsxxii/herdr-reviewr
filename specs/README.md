@@ -28,6 +28,7 @@ Each concern lives in the one doc that owns it. A change is woven into that doc,
 - `diff-view.md` — owns the structured diff viewer: model, syntax highlighting, word emphasis, folds, and views.
 - `file-list.md` — owns the right-pane file navigator: the changed-files tree, selection, and presentation.
 - `tui.md` — owns the terminal UI: layout, interaction, and refresh.
+- `config.md` — owns reviewr configuration: the config home, the keep list, and how the schema grows.
 - `herdr-host.md` — owns running as a herdr pane, the export target, and roadmap integration.
 
 ## The bar

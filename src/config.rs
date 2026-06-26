@@ -1,9 +1,10 @@
-//! Command-line configuration: the worktree, poll interval, and base ref.
+//! Configuration: command-line flags plus the `config.toml` keep list.
 //!
-//! See `specs/tui.md` and `specs/herdr-host.md`. Flags override defaults; the
-//! positional argument (if any) is the repo path, else the current directory.
+//! See `specs/tui.md`, `specs/herdr-host.md`, and `specs/config.md`. Flags override
+//! defaults; the positional argument (if any) is the repo path, else the current
+//! directory. The `keep` list is read from herdr's per-plugin config dir.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Resolved runtime configuration.
@@ -15,6 +16,32 @@ pub struct Config {
     pub theme: Option<String>,
     /// `Some(false)` when `--wrap off` is passed; `None` keeps the default (wrap on).
     pub wrap: Option<bool>,
+    /// The `config.toml` under `$HERDR_PLUGIN_CONFIG_DIR`, re-read each reload; `None`
+    /// outside a herdr pane.
+    pub config_path: Option<PathBuf>,
+}
+
+/// The reviewr config file under herdr's per-plugin config dir (`specs/config.md`), or
+/// `None` when `HERDR_PLUGIN_CONFIG_DIR` is unset — outside a herdr pane.
+pub fn config_path() -> Option<PathBuf> {
+    std::env::var_os("HERDR_PLUGIN_CONFIG_DIR").map(|d| PathBuf::from(d).join("config.toml"))
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct ConfigFile {
+    #[serde(default)]
+    keep: Vec<String>,
+}
+
+/// The `keep` patterns from a `config.toml`. `Ok(empty)` when the file is absent or sets
+/// no `keep`; `Err(message)` when the file exists but does not parse (`specs/config.md`).
+pub fn load_keep(path: &Path) -> Result<Vec<String>, String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.to_string()),
+    };
+    toml::from_str::<ConfigFile>(&text).map(|c| c.keep).map_err(|e| e.to_string())
 }
 
 impl Config {
@@ -45,7 +72,14 @@ impl Config {
         }
         let repo =
             repo.or_else(|| std::env::current_dir().ok()).unwrap_or_else(|| PathBuf::from("."));
-        Self { repo, poll: Duration::from_millis(poll_ms.max(200)), base, theme, wrap }
+        Self {
+            repo,
+            poll: Duration::from_millis(poll_ms.max(200)),
+            base,
+            theme,
+            wrap,
+            config_path: config_path(),
+        }
     }
 
     /// Parse from the real process arguments.
@@ -82,5 +116,30 @@ mod tests {
     fn poll_has_a_floor() {
         assert_eq!(parse(&["--poll", "10"]).poll, Duration::from_millis(200));
         assert_eq!(parse(&["--poll", "garbage"]).poll, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn load_keep_reads_the_patterns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "keep = [\"docs/plans/\", \".env.example\"]\n").unwrap();
+        assert_eq!(super::load_keep(&path).unwrap(), ["docs/plans/", ".env.example"]);
+    }
+
+    #[test]
+    fn load_keep_is_empty_when_absent_or_unset() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(super::load_keep(&dir.path().join("nope.toml")).unwrap().is_empty());
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "# no keep key\n").unwrap();
+        assert!(super::load_keep(&path).unwrap().is_empty());
+    }
+
+    #[test]
+    fn load_keep_errors_on_malformed_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "keep = [unterminated\n").unwrap();
+        assert!(super::load_keep(&path).is_err());
     }
 }

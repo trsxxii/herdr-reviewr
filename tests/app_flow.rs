@@ -1007,11 +1007,12 @@ fn switching_scope_swaps_the_changeset() {
     let mut app = App::new(r.path_buf(), Scope::Uncommitted, Some("main".to_string()));
     app.reload().unwrap();
     assert!(app.entries.iter().any(|f| f.path == "dirty.rs"));
-    assert!(app.entries.iter().all(|f| f.path != "committed.rs"));
+    assert!(app.entries.iter().all(|f| f.path != "committed.rs"), "uncommitted omits commits");
 
+    // Branch is a superset of uncommitted: it adds the committed work, keeps the dirty file.
     app.set_scope(Scope::Branch).unwrap();
-    assert!(app.entries.iter().any(|f| f.path == "committed.rs"));
-    assert!(app.entries.iter().all(|f| f.path != "dirty.rs"));
+    assert!(app.entries.iter().any(|f| f.path == "committed.rs"), "branch adds committed work");
+    assert!(app.entries.iter().any(|f| f.path == "dirty.rs"), "branch keeps the working tree");
 }
 
 #[test]
@@ -1509,24 +1510,68 @@ fn switching_scope_on_all_files_remarks_in_place() {
     r.write("a.rs", "one\n");
     r.write("b.rs", "two\n");
     r.commit_all("init");
+    r.git(&["checkout", "-q", "-b", "feature"]);
+    r.write("b.rs", "TWO\n");
+    r.commit_all("committed change to b"); // committed on the branch
     r.write("a.rs", "ONE\n"); // one uncommitted change
     let mut app = app_on(&r);
     app.set_tab(Tab::AllFiles).unwrap();
     app.focus = Focus::Files;
     app.move_cursor(1).unwrap();
     let cursor = app.file_cursor;
-    assert_eq!(app.changed_count(), 1, "uncommitted has one change");
+    assert_eq!(app.changed_count(), 1, "uncommitted marks only the dirty file");
     assert!(
         matches!(annotation_of(&app, "a.rs"), Some(Some(_))),
         "a.rs is marked under uncommitted"
     );
+    assert_eq!(annotation_of(&app, "b.rs"), Some(None), "b.rs is unmarked under uncommitted");
 
-    // Branch scope has no changes in a one-commit repo, so the marks clear — in place.
+    // Branch is a superset: it adds the committed b.rs and keeps a.rs — re-marked in place.
     app.set_scope(Scope::Branch).unwrap();
     assert_eq!(app.file_cursor, cursor, "the cursor holds across a scope re-mark");
-    assert_eq!(app.changed_count(), 0, "branch scope clears the marks");
-    assert_eq!(annotation_of(&app, "a.rs"), Some(None), "a.rs is now unmarked");
-    assert!(app.entries.iter().any(|e| e.path == "b.rs"), "the listing is unchanged");
+    assert_eq!(app.changed_count(), 2, "branch marks both the committed and the dirty file");
+    assert!(matches!(annotation_of(&app, "a.rs"), Some(Some(_))), "a.rs stays marked");
+    assert!(matches!(annotation_of(&app, "b.rs"), Some(Some(_))), "b.rs is now marked");
+}
+
+#[test]
+fn all_files_lazily_loads_an_expanded_ignored_directory() {
+    use herdr_reviewr::app::Tab;
+    let r = Repo::init();
+    r.write("src/app.rs", "fn main() {}\n");
+    r.commit_all("init");
+    r.write(".gitignore", "target/\n");
+    r.write("target/build.o", "x\n");
+    r.write("target/sub/y.o", "y\n");
+    let mut app = app_on(&r);
+    app.set_tab(Tab::AllFiles).unwrap();
+    app.focus = Focus::Files;
+
+    // target/ is a collapsed, ignored placeholder; its contents are not loaded yet.
+    assert!(app.entries.iter().any(|e| e.path == "target" && e.is_dir && e.ignored));
+    assert!(!app.entries.iter().any(|e| e.path.starts_with("target/")), "children not loaded yet");
+
+    // Expand it → immediate children load (one level only), still ignored/dimmed.
+    let row = |a: &App| a.file_rows.iter().position(|r| r.dir_path() == Some("target")).unwrap();
+    app.file_cursor = row(&app);
+    app.expand_dir();
+    assert!(
+        app.entries.iter().any(|e| e.path == "target/build.o" && e.ignored),
+        "file child loads"
+    );
+    assert!(
+        app.entries.iter().any(|e| e.path == "target/sub" && e.is_dir),
+        "subdir placeholder loads"
+    );
+    assert!(!app.entries.iter().any(|e| e.path == "target/sub/y.o"), "deeper level stays lazy");
+
+    // Collapse → children drop back out of the entry set.
+    app.file_cursor = row(&app);
+    app.collapse_dir();
+    assert!(
+        !app.entries.iter().any(|e| e.path.starts_with("target/")),
+        "collapsing unloads children"
+    );
 }
 
 #[test]

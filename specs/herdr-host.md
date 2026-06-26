@@ -47,7 +47,7 @@ A `blocked`→`working` step is a mid-turn resume after a permission or input pr
 
 On a turn start, reviewr snapshots the worktree and holds it as a candidate baseline. The candidate is promoted to the live baseline the first poll on which that turn has changed a file — so a turn that edits nothing never moves the baseline, and the previous turn stays on screen. The live baseline is the old side of every `last-turn` diff until the next change-producing turn replaces it.
 
-The snapshot is non-disruptive. reviewr writes a tree from the worktree through a temporary index (`GIT_INDEX_FILE`), never touching the real index, the worktree, or any branch. It keeps the live baseline as a private ref under `refs/reviewr/turn-base/<worktree-key>` — outside `refs/heads`, so it never appears in a branch list — keyed by the worktree path so sibling worktrees sharing one ref store do not collide. The ref persists, so reopening the sidebar resumes the same baseline.
+The snapshot is non-disruptive. reviewr writes a tree from the worktree through a temporary index (`GIT_INDEX_FILE`), never touching the real index, the worktree, or any branch. The tree captures tracked and untracked content, plus the kept ignored paths from the `keep` config (`review-model.md`) force-added into the temporary index, so a change to an opted-in ignored file shows in `last-turn` too. It keeps the live baseline as a private ref under `refs/reviewr/turn-base/<worktree-key>` — outside `refs/heads`, so it never appears in a branch list — keyed by the worktree path so sibling worktrees sharing one ref store do not collide. The ref persists, so reopening the sidebar resumes the same baseline.
 
 ## Failure semantics
 

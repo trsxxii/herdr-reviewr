@@ -490,20 +490,23 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
             match &row.kind {
                 RowKind::Dir { expanded, .. } => {
                     let arrow = if *expanded { "▾ " } else { "▸ " };
+                    // A git-ignored directory recedes into a dim, unbolded row (file-list.md).
+                    let name_style = if row.ignored {
+                        Style::default().fg(cat::OVERLAY0)
+                    } else {
+                        Style::default().fg(cat::SUBTEXT0).add_modifier(Modifier::BOLD)
+                    };
                     let spans = vec![
                         Span::styled(
                             format!("{indent}{arrow}"),
                             Style::default().fg(cat::OVERLAY0),
                         ),
-                        Span::styled(
-                            format!("{}/", row.name),
-                            Style::default().fg(cat::SUBTEXT0).add_modifier(Modifier::BOLD),
-                        ),
+                        Span::styled(format!("{}/", row.name), name_style),
                     ];
                     selectable_row(spans, width, fill)
                 }
                 RowKind::File { annotation, .. } => {
-                    file_row_item(&indent, annotation.as_ref(), &row.name, width, fill)
+                    file_row_item(&indent, annotation.as_ref(), &row.name, width, fill, row.ignored)
                 }
             }
         })
@@ -521,6 +524,7 @@ fn file_row_item(
     name: &str,
     width: usize,
     fill: Option<Color>,
+    ignored: bool,
 ) -> ListItem<'static> {
     let marker = annotation.map_or(String::new(), |a| format!("{} ", a.change.marker()));
     let (additions, deletions) = annotation.map_or((0, 0), |a| (a.additions, a.deletions));
@@ -541,7 +545,10 @@ fn file_row_item(
     if !dim.is_empty() {
         spans.push(Span::styled(dim.to_string(), Style::default().fg(cat::OVERLAY0)));
     }
-    spans.push(Span::styled(base.to_string(), text_style()));
+    // A git-ignored file recedes into a dim basename; its change marker and stats keep their
+    // color so a kept ignored file still reads as a change (file-list.md).
+    let base_style = if ignored { Style::default().fg(cat::OVERLAY0) } else { text_style() };
+    spans.push(Span::styled(base.to_string(), base_style));
     if !stats.is_empty() {
         let used: usize = spans.iter().map(Span::width).sum();
         let pad = width.saturating_sub(used + stats.width());

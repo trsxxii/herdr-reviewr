@@ -85,6 +85,12 @@ pub enum Mode {
 pub struct App {
     pub repo: PathBuf,
     pub base: Option<String>,
+    /// gitignore-glob patterns from `config.toml` whose ignored paths are reviewable
+    /// (specs/config.md). Empty unless a config file sets `keep`.
+    pub keep: Vec<String>,
+    /// The `config.toml` to re-read on each reload; `None` when no config dir is set
+    /// (the default in tests and outside a herdr pane).
+    pub config_path: Option<PathBuf>,
     pub scope: Scope,
     /// The active tab; it drives both panes and selects the per-tab state in play.
     pub tab: Tab,
@@ -167,6 +173,8 @@ impl App {
         Self {
             repo,
             base,
+            keep: Vec::new(),
+            config_path: None,
             scope,
             tab: Tab::Changes,
             focus: Focus::Files,
@@ -285,6 +293,45 @@ impl App {
 
     /// Reload the changed-files list and (unless composing) the open diff.
     ///
+    /// The `All files` entries: every worktree path (ignored dimmed), with the children of
+    /// expanded ignored directories loaded lazily (`specs/file-list.md`). Only directories the
+    /// user has expanded are walked, so the cost tracks what is on screen, not the whole tree.
+    fn all_files_entries(&self) -> Result<Vec<Entry>> {
+        let to_entry = |w: git::WorktreeEntry| Entry {
+            annotation: self.changed.get(&w.path).cloned(),
+            path: w.path,
+            previous_path: None,
+            ignored: w.ignored,
+            is_dir: w.is_dir,
+        };
+        let mut entries: Vec<Entry> =
+            git::all_files(&self.repo)?.into_iter().map(&to_entry).collect();
+        let mut i = 0;
+        while i < entries.len() {
+            if entries[i].is_dir && self.toggled_dirs.contains(&entries[i].path) {
+                let path = entries[i].path.clone();
+                let children = git::list_ignored_dir(&self.repo, &path).into_iter().map(&to_entry);
+                entries.extend(children);
+            }
+            i += 1;
+        }
+        Ok(entries)
+    }
+
+    /// Re-read `keep` from the config file (`specs/config.md`). A missing file resets to
+    /// defaults; a malformed one keeps defaults and reports a status notice rather than
+    /// failing the reload.
+    fn load_config(&mut self) {
+        let Some(path) = self.config_path.clone() else { return };
+        match crate::config::load_keep(&path) {
+            Ok(keep) => self.keep = keep,
+            Err(msg) => {
+                self.keep = Vec::new();
+                self.status = format!("config.toml: {msg}");
+            }
+        }
+    }
+
     /// Never touches the comment store or the in-progress input — that is the
     /// "a comment is never lost to a refresh" invariant (`specs/overview.md`).
     pub fn reload(&mut self) -> Result<()> {
@@ -303,6 +350,8 @@ impl App {
             }
             return Ok(());
         }
+        // Re-read the config so an edit to `keep` takes effect on this reload (config.md).
+        self.load_config();
         // Keep the cursor on the same row target across the rebuild; fall back to the open
         // file, then the first file. The toggled-directory set survives untouched.
         let anchor = self.cursor_anchor();
@@ -313,21 +362,15 @@ impl App {
         // is observed (specs/review-model.md).
         let changed = match self.scope {
             Scope::LastTurn => match self.turn.baseline() {
-                Some(t) => git::changed_against_tree(&self.repo, t)?,
+                Some(t) => git::changed_against_tree(&self.repo, t, &self.keep)?,
                 None => Vec::new(),
             },
-            _ => git::changed_files(&self.repo, self.scope, self.base.as_deref())?,
+            _ => git::changed_files(&self.repo, self.scope, self.base.as_deref(), &self.keep)?,
         };
         self.changed = changed.iter().map(|f| (f.path.clone(), Annotation::from(f))).collect();
         self.entries = match self.tab {
-            // The whole worktree; a changed file carries its scope annotation, the rest none.
-            Tab::AllFiles => git::all_files(&self.repo)?
-                .into_iter()
-                .map(|path| {
-                    let annotation = self.changed.get(&path).cloned();
-                    Entry { path, previous_path: None, annotation }
-                })
-                .collect(),
+            // The whole worktree (ignored included), with expanded ignored dirs loaded lazily.
+            Tab::AllFiles => self.all_files_entries()?,
             Tab::Changes => changed.iter().map(Entry::from_changed).collect(),
         };
         self.rebuild_file_rows();
@@ -477,9 +520,8 @@ impl App {
     }
 
     /// The old and new content of `file` for the current scope: old from `HEAD` (or the
-    /// merge-base on the branch scope), new from the worktree (or `HEAD` on branch). A rename
-    /// reads its old side from `previous_path`, so the diff shows real edits, not a wholesale
-    /// delete-and-add.
+    /// merge-base on the branch scope), new from the worktree. A rename reads its old side
+    /// from `previous_path`, so the diff shows real edits, not a wholesale delete-and-add.
     fn content_sides(&self, path: &str, previous_path: Option<&str>) -> (String, String) {
         let new_path = path;
         let old_path = previous_path.unwrap_or(new_path);
@@ -493,7 +535,7 @@ impl App {
                 let mb = git::merge_base(&self.repo, self.base.as_deref());
                 let old =
                     mb.map(|m| git::file_content(&self.repo, &m, old_path)).unwrap_or_default();
-                (old, git::file_content(&self.repo, "HEAD", new_path))
+                (old, worktree_content(&self.repo, new_path))
             }
             Scope::LastTurn => {
                 let old = self
@@ -528,7 +570,7 @@ impl App {
     pub fn apply_agent_status(&mut self, status: Option<&str>) {
         let Some(status) = status else { return };
         if self.turn.observe(Status::parse(status)) {
-            match git::snapshot_worktree(&self.repo) {
+            match git::snapshot_worktree(&self.repo, &self.keep) {
                 Ok(sha) => self.turn.set_candidate(sha),
                 Err(e) => logln!("turn snapshot failed: {e}"),
             }
@@ -536,7 +578,7 @@ impl App {
         // Promote the pending candidate once the turn has changed a file. Compare full
         // snapshots so a new untracked file counts as a change (specs/herdr-host.md).
         let Some(candidate) = self.turn.candidate().map(str::to_string) else { return };
-        match git::snapshot_worktree(&self.repo) {
+        match git::snapshot_worktree(&self.repo, &self.keep) {
             Ok(now) if now != candidate => {
                 self.turn.promote();
                 if let Err(e) = git::write_baseline_ref(&self.repo, &self.turn_key, &candidate) {
@@ -846,6 +888,13 @@ impl App {
 
     /// Rebuild the tree after a directory's expansion changed, keeping the cursor in range.
     fn apply_dir_change(&mut self) {
+        // In `All files`, expanding an ignored directory loads its children lazily, so the
+        // entry set is rebuilt before the rows (file-list.md). Other tabs just re-flatten.
+        if self.tab == Tab::AllFiles
+            && let Ok(entries) = self.all_files_entries()
+        {
+            self.entries = entries;
+        }
         self.rebuild_file_rows();
         self.file_cursor = self.file_cursor.min(self.file_rows.len().saturating_sub(1));
         self.reveal_files = true; // the row may have moved off-screen; pull it back
