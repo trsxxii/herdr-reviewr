@@ -91,7 +91,15 @@ mod tests {
     use crate::model::{Comment, Side};
 
     fn comment(file: &str, side: Side, start: u32, end: u32, lines: &str, text: &str) -> Comment {
-        Comment { file: file.into(), side, start, end, lines: lines.into(), text: text.into() }
+        Comment {
+            file: file.into(),
+            side,
+            start,
+            end,
+            lines: lines.into(),
+            text: text.into(),
+            diff_anchored: true,
+        }
     }
 
     #[test]

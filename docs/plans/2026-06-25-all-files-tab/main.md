@@ -13,7 +13,7 @@ Add a second tab, `All files`, that browses the whole worktree and turns it into
 
 ## Current Milestone
 
-`01-all-files-browser.md`
+`02-review-surface.md`
 
 ## Deferred Decisions
 

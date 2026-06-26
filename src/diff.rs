@@ -50,6 +50,12 @@ impl Row {
         }
     }
 
+    /// The line to anchor on: the new-side number when present, else the old-side; `None` on a
+    /// fold. Used to carry the cursor's line across a tab-switch seed.
+    pub fn line_no(&self) -> Option<u32> {
+        self.new_no().or_else(|| self.old_no())
+    }
+
     pub fn spans(&self) -> &[Span] {
         match self {
             Row::Context { spans, .. }

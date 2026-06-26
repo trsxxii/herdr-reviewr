@@ -990,7 +990,8 @@ fn a_comment_on_a_reverted_file_is_flagged_stale() {
 
     assert!(app.entries.iter().all(|f| f.path != "a.rs"), "file left the changeset");
     assert_eq!(app.store.len(), 1, "the comment still exists");
-    assert!(app.stale_files().contains("a.rs"), "and is flagged stale");
+    let c = app.store.get(0).unwrap();
+    assert!(app.is_stale(c), "a diff comment whose file left the changeset is stale");
 }
 
 #[test]
@@ -1355,19 +1356,20 @@ fn all_files_tab_browses_the_whole_worktree_and_renders_content() {
     r.write("src/ui.rs", "fn render() {}\n");
     r.write("README.md", "# hi\n");
     r.commit_all("init");
-    r.write("src/app.rs", "fn main() { run() }\n"); // one uncommitted change
+    r.write("README.md", "# changed\n"); // change a top-level file (no dir to reveal)
     let mut app = app_on(&r);
 
     // Changes lists only the changed file and opens its diff.
     assert_eq!(app.tab, Tab::Changes);
     assert_eq!(app.entries.len(), 1);
-    assert_eq!(app.diff_path.as_deref(), Some("src/app.rs"));
+    assert_eq!(app.diff_path.as_deref(), Some("README.md"));
 
-    // All files lists the whole worktree, directories collapsed by default.
+    // All files lists the whole worktree and seeds the carried top-level file, so src/ stays
+    // collapsed by default.
     app.set_tab(Tab::AllFiles).unwrap();
     assert_eq!(app.tab, Tab::AllFiles);
     assert!(app.entries.iter().any(|e| e.path == "src/ui.rs"), "an unchanged file is listed");
-    assert!(app.entries.iter().any(|e| e.path == "README.md"));
+    assert_eq!(app.diff_path.as_deref(), Some("README.md"), "seeded to the carried file");
     assert!(app.file_rows.iter().any(|row| row.dir_path() == Some("src")), "src/ is a dir row");
     assert!(file_row_of(&app, "src/ui.rs").is_none(), "a collapsed dir hides its children");
 
@@ -1426,21 +1428,208 @@ fn changed_count_and_staleness_stay_scope_based_on_all_files() {
     let mut app = app_on(&r);
     assert_eq!(app.changed_count(), 1, "Changes counts the one changed file");
 
-    // A comment on b.rs, which is in the worktree but not in the changeset.
-    app.store.add(Comment {
+    // A diff comment on b.rs, which is in the worktree but not in the changeset.
+    let comment = Comment {
         file: "b.rs".into(),
         side: Side::New,
         start: 1,
         end: 1,
         lines: " two".into(),
         text: "?".into(),
-    });
+        diff_anchored: true,
+    };
+    app.store.add(comment.clone());
 
     app.set_tab(Tab::AllFiles).unwrap();
     assert!(app.entries.len() >= 2, "All files lists the whole worktree");
     assert_eq!(app.changed_count(), 1, "the count is the changeset, not the worktree total");
     assert!(
-        app.stale_files().contains("b.rs"),
-        "staleness keys on the changeset even while All files lists b.rs"
+        app.is_stale(&comment),
+        "a diff comment keys on the changeset even while All files lists b.rs"
     );
+}
+
+/// The annotation on the `All files` row for `path`: `Some(Some(_))` annotated, `Some(None)`
+/// listed-but-unchanged, `None` not visible.
+#[allow(clippy::option_option)] // outer = row found, inner = its annotation
+fn annotation_of(app: &App, path: &str) -> Option<Option<herdr_review::file_list::Annotation>> {
+    use herdr_review::file_list::RowKind;
+    app.file_rows.iter().find_map(|row| match &row.kind {
+        RowKind::File { index, annotation } if app.entries[*index].path == path => {
+            Some(annotation.clone())
+        }
+        _ => None,
+    })
+}
+
+#[test]
+fn all_files_annotates_changed_files_only() {
+    use herdr_review::app::Tab;
+    use herdr_review::model::ChangeKind;
+    let r = Repo::init();
+    r.write("a.rs", "one\n");
+    r.write("b.rs", "two\n");
+    r.commit_all("init");
+    r.write("a.rs", "ONE\n"); // a.rs changed, b.rs unchanged
+    let mut app = app_on(&r);
+    app.set_tab(Tab::AllFiles).unwrap();
+    assert!(
+        matches!(annotation_of(&app, "a.rs"), Some(Some(a)) if a.change == ChangeKind::Modified),
+        "a changed file carries its marker"
+    );
+    assert_eq!(
+        annotation_of(&app, "b.rs"),
+        Some(None),
+        "an unchanged file is listed without a marker"
+    );
+}
+
+#[test]
+fn switching_scope_on_all_files_remarks_in_place() {
+    use herdr_review::app::Tab;
+    let r = Repo::init();
+    r.write("a.rs", "one\n");
+    r.write("b.rs", "two\n");
+    r.commit_all("init");
+    r.write("a.rs", "ONE\n"); // one uncommitted change
+    let mut app = app_on(&r);
+    app.set_tab(Tab::AllFiles).unwrap();
+    app.focus = Focus::Files;
+    app.move_cursor(1).unwrap();
+    let cursor = app.file_cursor;
+    assert_eq!(app.changed_count(), 1, "uncommitted has one change");
+    assert!(
+        matches!(annotation_of(&app, "a.rs"), Some(Some(_))),
+        "a.rs is marked under uncommitted"
+    );
+
+    // Branch scope has no changes in a one-commit repo, so the marks clear — in place.
+    app.set_scope(Scope::Branch).unwrap();
+    assert_eq!(app.file_cursor, cursor, "the cursor holds across a scope re-mark");
+    assert_eq!(app.changed_count(), 0, "branch scope clears the marks");
+    assert_eq!(annotation_of(&app, "a.rs"), Some(None), "a.rs is now unmarked");
+    assert!(app.entries.iter().any(|e| e.path == "b.rs"), "the listing is unchanged");
+}
+
+#[test]
+fn content_comment_is_stale_only_when_its_file_is_deleted() {
+    use herdr_review::app::Tab;
+    let r = Repo::init();
+    r.write("a.rs", "alpha\nbeta\n");
+    r.commit_all("init");
+    let mut app = app_on(&r);
+    app.set_tab(Tab::AllFiles).unwrap();
+    let row = file_row_of(&app, "a.rs").expect("a.rs at the top level");
+    app.select_file(row).unwrap();
+    app.focus = Focus::Diff;
+    app.diff_cursor = 0;
+    app.start_comment();
+    for ch in "note".chars() {
+        app.input_push(ch);
+    }
+    app.submit_comment();
+    let c = app.store.get(0).expect("a comment was made").clone();
+    assert!(!c.diff_anchored, "a File-view comment is content-anchored");
+
+    app.reload().unwrap();
+    assert!(!app.is_stale(&c), "a content comment on an existing, unchanged file is not stale");
+    r.remove("a.rs");
+    app.reload().unwrap();
+    assert!(app.is_stale(&c), "it becomes stale only once its file is deleted");
+}
+
+#[test]
+fn a_tab_switch_seeds_the_carried_file_at_its_line() {
+    use std::fmt::Write as _;
+
+    use herdr_review::app::Tab;
+    use herdr_review::diff::View;
+    let r = Repo::init();
+    let mut body = String::new();
+    for i in 0..30 {
+        writeln!(body, "line {i}").unwrap();
+    }
+    r.write("src/app.rs", &body);
+    r.write("README.md", "# hi\n");
+    r.commit_all("init");
+    r.write("src/app.rs", &body.replace("line 10", "LINE 10"));
+    let mut app = app_on(&r);
+
+    // In Changes, land the diff cursor on a content row a few lines down; note its line.
+    app.focus = Focus::Diff;
+    let target = app
+        .visible
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.line_no().is_some())
+        .nth(3)
+        .map(|(i, _)| i)
+        .expect("a content row");
+    app.diff_cursor = target;
+    let line = app.visible[target].line_no().unwrap();
+
+    // Switch to All files: seeded to the same file's content at the same line.
+    app.set_tab(Tab::AllFiles).unwrap();
+    assert_eq!(app.diff_path.as_deref(), Some("src/app.rs"), "seeded to the carried file");
+    assert_eq!(app.diff.view, View::File);
+    assert_eq!(app.visible[app.diff_cursor].line_no(), Some(line), "landed on the carried line");
+
+    // Move within All files, then bounce away and back: the second visit restores the moved
+    // spot — it does not re-seed to the original line.
+    app.focus = Focus::Diff;
+    app.move_cursor(2).unwrap();
+    let moved = app.visible[app.diff_cursor].line_no();
+    app.set_tab(Tab::Changes).unwrap();
+    app.set_tab(Tab::AllFiles).unwrap();
+    assert_eq!(
+        app.visible[app.diff_cursor].line_no(),
+        moved,
+        "the second visit restores, not re-seeds"
+    );
+}
+
+#[test]
+fn a_file_outside_the_changeset_does_not_seed_changes() {
+    use herdr_review::app::Tab;
+    let r = Repo::init();
+    r.write("a.rs", "one\n");
+    r.commit_all("init"); // a clean worktree — no changes
+    let mut app = app_on(&r);
+    assert_eq!(app.changed_count(), 0);
+    assert!(app.diff_path.is_none(), "Changes opens nothing with an empty changeset");
+
+    app.set_tab(Tab::AllFiles).unwrap();
+    let row = file_row_of(&app, "a.rs").unwrap();
+    app.select_file(row).unwrap();
+    assert_eq!(app.diff_path.as_deref(), Some("a.rs"), "viewing a.rs in All files");
+
+    // Back to Changes: a.rs is not in the (empty) changeset, so it cannot seed.
+    app.set_tab(Tab::Changes).unwrap();
+    assert!(app.diff_path.is_none(), "an unchanged file does not seed the Changes tab");
+}
+
+#[test]
+fn a_file_view_comment_exports_as_path_line_with_a_context_snippet() {
+    use herdr_review::app::Tab;
+    let r = Repo::init();
+    r.write("a.rs", "alpha\nbeta\ngamma\n");
+    r.commit_all("init");
+    let mut app = app_on(&r);
+    app.set_tab(Tab::AllFiles).unwrap();
+    let row = file_row_of(&app, "a.rs").expect("a.rs listed");
+    app.select_file(row).unwrap();
+    app.focus = Focus::Diff;
+    app.diff_cursor = 1; // the second line, "beta"
+    app.start_comment();
+    for ch in "why".chars() {
+        app.input_push(ch);
+    }
+    app.submit_comment();
+
+    let target = FakeTarget::ok();
+    app.export(&target);
+    let out = target.last();
+    assert!(out.contains("a.rs:2"), "header is path:line:\n{out}");
+    assert!(!out.contains("(removed)"), "a content comment never carries (removed):\n{out}");
+    assert!(out.contains(" beta"), "the snippet is the space-prefixed content line:\n{out}");
 }

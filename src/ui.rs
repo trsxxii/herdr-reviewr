@@ -1105,7 +1105,6 @@ fn render_comments_list(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(block, popup);
 
     let width = inner.width as usize;
-    let stale = app.stale_files();
     let items: Vec<ListItem> = app
         .store
         .iter()
@@ -1116,8 +1115,9 @@ fn render_comments_list(frame: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(cat::MAUVE).add_modifier(Modifier::BOLD),
             );
             let mut spans = vec![loc, Span::styled(format!("  {}", c.text), text_style())];
-            // A comment whose file has left the changeset is flagged but kept.
-            if stale.contains(&c.file) {
+            // A comment whose anchor may have moved (file left the changeset, or a content
+            // comment's file was deleted) is flagged but kept.
+            if app.is_stale(c) {
                 spans.push(Span::styled("  (stale)", Style::default().fg(cat::RED)));
             }
             // The list overlay is the active modal, so its row reads at full brightness.

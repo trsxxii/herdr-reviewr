@@ -5,14 +5,14 @@
 //! whole interaction model is testable without a backend. `src/main.rs` owns the
 //! terminal and maps input events onto these methods.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use anyhow::Result;
 
-use crate::diff::{DiffCache, FileDiff, Row};
+use crate::diff::{DiffCache, FileDiff, Row, View};
 use crate::export::{ExportTarget, format_all};
-use crate::file_list::{self, Entry, RowKind};
+use crate::file_list::{self, Annotation, Entry, RowKind};
 use crate::git;
 use crate::highlight::Highlighter;
 use crate::logln;
@@ -114,10 +114,11 @@ pub struct App {
     toggled_dirs: HashSet<String>,
     /// The inactive tab's saved state, swapped in on a tab switch.
     stash: TabStash,
-    /// Repo-relative paths changed in the active scope, recomputed every reload regardless of
-    /// the active tab. Backs the header's changed-file count and comment staleness — both scope
-    /// concepts that stay correct while `All files` is shown.
-    changed_paths: HashSet<String>,
+    /// The active scope's changed files, keyed by repo-relative path and recomputed every
+    /// reload regardless of tab. Keys back the header count and diff-comment staleness; values
+    /// annotate `All files` entries with their marker and stats. Stays correct while `All
+    /// files` lists the whole worktree.
+    changed: HashMap<String, Annotation>,
     pub diff: FileDiff,
     /// The rows actually shown: `diff.rows` with each fold collapsed to a marker or
     /// expanded to its lines. The cursor, scroll, selection, and hit-testing index this.
@@ -178,7 +179,7 @@ impl App {
             resume_list: false,
             toggled_dirs: HashSet::new(),
             stash: TabStash::default(),
-            changed_paths: HashSet::new(),
+            changed: HashMap::new(),
             diff: FileDiff::empty(),
             visible: Vec::new(),
             expanded_folds: HashSet::new(),
@@ -290,7 +291,7 @@ impl App {
         // Outside a git repo, show an empty state rather than failing (herdr-host.md).
         if !git::is_repo(&self.repo) {
             self.entries.clear();
-            self.changed_paths.clear();
+            self.changed.clear();
             self.file_rows.clear();
             self.file_cursor = 0;
             self.file_scroll = 0;
@@ -317,10 +318,23 @@ impl App {
             },
             _ => git::changed_files(&self.repo, self.scope, self.base.as_deref())?,
         };
-        self.changed_paths = changed.iter().map(|f| f.path.clone()).collect();
+        self.changed = changed
+            .iter()
+            .map(|f| {
+                let annotation =
+                    Annotation { change: f.kind, additions: f.additions, deletions: f.deletions };
+                (f.path.clone(), annotation)
+            })
+            .collect();
         self.entries = match self.tab {
-            // The whole worktree, scope-independent; the scope shows only in the count (and M2 marks).
-            Tab::AllFiles => git::all_files(&self.repo)?.into_iter().map(Entry::plain).collect(),
+            // The whole worktree; a changed file carries its scope annotation, the rest none.
+            Tab::AllFiles => git::all_files(&self.repo)?
+                .into_iter()
+                .map(|path| {
+                    let annotation = self.changed.get(&path).cloned();
+                    Entry { path, previous_path: None, annotation }
+                })
+                .collect(),
             Tab::Changes => changed.iter().map(Entry::from_changed).collect(),
         };
         self.rebuild_file_rows();
@@ -627,16 +641,18 @@ impl App {
     pub fn set_scope(&mut self, scope: Scope) -> Result<()> {
         if self.scope != scope && !self.composing() {
             self.scope = scope;
-            self.file_cursor = 0;
-            // A file's old side can differ between scopes at the same path+new-content, so
-            // drop cached diffs rather than risk returning the other scope's build. Fold
-            // expansions are keyed by line number within a diff, so drop them too.
-            self.cache = DiffCache::new();
-            self.expanded_folds.clear();
-            self.reset_diff_view();
+            // On `Changes` the changeset (and each file's old side) changes with the scope, so
+            // reset the cursor, drop cached diffs, and snap the diff to the top. On `All files`
+            // the listing and the File view are scope-independent — only the annotations move —
+            // so hold the cursor, scroll, and folds and let `reload` re-mark in place.
+            if self.tab == Tab::Changes {
+                self.file_cursor = 0;
+                self.cache = DiffCache::new();
+                self.expanded_folds.clear();
+                self.reset_diff_view();
+            }
             self.reload()?;
-            // An explicit scope switch resets to the top, so reveal the reset cursor (a poll,
-            // which also calls reload, deliberately does not).
+            // An explicit switch reveals the cursor (a poll, which also calls reload, does not).
             self.reveal_files = true;
         }
         Ok(())
@@ -649,11 +665,58 @@ impl App {
         if self.tab == tab || self.composing() {
             return Ok(());
         }
+        // Capture the file and line under the reader now, before the swap moves them into the
+        // stash — so an unselected target tab can be seeded with the same code (specs/tui.md).
+        let seed = self.diff_path.clone().map(|path| {
+            let line = self.visible.get(self.diff_cursor).and_then(Row::line_no);
+            (path, line)
+        });
         self.swap_active_with_stash();
         self.tab = tab;
+        // Whether the entered tab had a selection of its own, read from its restored stash
+        // before `reload` auto-opens a first file and masks it.
+        let target_was_empty = self.diff_path.is_none();
         self.reload()?;
-        self.reveal_files = true; // pull the restored cursor back into view
+        // Seed only a first-visit tab, and only from a file it actually contains; otherwise its
+        // own restored selection stands. The seed overrides `reload`'s alphabetical auto-open.
+        if target_was_empty
+            && let Some((path, line)) = seed
+            && self.entries.iter().any(|e| e.path == path)
+        {
+            self.seed_file(&path, line);
+        }
+        self.reveal_files = true; // pull the restored or seeded cursor back into view
         Ok(())
+    }
+
+    /// Seed an unselected tab from the file carried across a switch: reveal the file in the
+    /// tree, open it, and land the cursor on the carried line (specs/tui.md).
+    fn seed_file(&mut self, path: &str, line: Option<u32>) {
+        self.reveal_path(path);
+        self.load_left();
+        if let Some(line) = line
+            && let Some(idx) = self.visible.iter().position(|r| r.line_no() == Some(line))
+        {
+            self.diff_cursor = idx;
+        }
+        self.reveal_diff = true;
+    }
+
+    /// Expand every ancestor directory of `path` so its row is visible, rebuild the tree, and
+    /// move the cursor onto it (specs/file-list.md).
+    fn reveal_path(&mut self, path: &str) {
+        let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        let mut prefix = String::new();
+        // Ancestors are every segment but the last (the file); single-child chains that fold
+        // into a file row have no matching dir, so expanding their prefix is a harmless no-op.
+        for seg in &segs[..segs.len().saturating_sub(1)] {
+            prefix = if prefix.is_empty() { (*seg).to_string() } else { format!("{prefix}/{seg}") };
+            self.set_dir_expanded(&prefix, true);
+        }
+        self.rebuild_file_rows();
+        if let Some(row) = self.file_row_of_path(path) {
+            self.file_cursor = row;
+        }
     }
 
     /// Exchange the active per-tab fields with the inactive tab's saved snapshot. Every
@@ -1149,7 +1212,10 @@ impl App {
         // selection — they diverge if the list shifts under a comment in progress.
         let file = self.diff_path.clone()?;
         let (side, start, end, lines) = self.selection_anchor()?;
-        Some(Comment { file, side, start, end, lines, text })
+        // The File view marks every comment as content-anchored, so it ages by file existence,
+        // not changeset membership (specs/review-model.md).
+        let diff_anchored = self.diff.view == View::Diff;
+        Some(Comment { file, side, start, end, lines, text, diff_anchored })
     }
 
     /// The `path:line` the composer is anchored to (selection for a new comment,
@@ -1160,10 +1226,17 @@ impl App {
             Mode::Composing { editing: None } => {
                 let file = self.diff_path.clone()?;
                 let (side, start, end, _) = self.selection_anchor()?;
-                Some(
-                    Comment { file, side, start, end, lines: String::new(), text: String::new() }
-                        .location(),
-                )
+                // Only `location()` is read here, which ignores `diff_anchored`.
+                let c = Comment {
+                    file,
+                    side,
+                    start,
+                    end,
+                    lines: String::new(),
+                    text: String::new(),
+                    diff_anchored: true,
+                };
+                Some(c.location())
             }
             Mode::Normal | Mode::List => None,
         }
@@ -1298,17 +1371,18 @@ impl App {
     /// The number of files changed in the active scope — the header count, the same on both
     /// tabs (specs/tui.md), since `All files` lists the worktree but counts the changeset.
     pub fn changed_count(&self) -> usize {
-        self.changed_paths.len()
+        self.changed.len()
     }
 
-    /// Files that carry comments but are no longer in the changeset (anchors may be stale).
-    /// Keyed on the scope's changeset, so the flag is correct from either tab.
-    pub fn stale_files(&self) -> HashSet<String> {
-        self.store
-            .iter()
-            .map(|c| c.file.clone())
-            .filter(|f| !self.changed_paths.contains(f))
-            .collect()
+    /// Whether a comment's anchor may have moved. A diff comment is stale once its file leaves
+    /// the changeset; a File-view (content) comment only once its file is gone from the
+    /// worktree, since it was never tied to the changeset (specs/review-model.md).
+    pub fn is_stale(&self, c: &Comment) -> bool {
+        if c.diff_anchored {
+            !self.changed.contains_key(&c.file)
+        } else {
+            !self.repo.join(&c.file).exists()
+        }
     }
 
     fn clamp_list_cursor(&mut self) {
