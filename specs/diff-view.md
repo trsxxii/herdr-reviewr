@@ -69,7 +69,7 @@ A row is one of four kinds. Content rows (`context`, `deletion`, `insertion`) ar
 
 - The `All files` tab renders a file in File view: the `FileDiff` is built from the current content alone, every line a `context` row, with no deletions, insertions, `emphasis`, or folds.
 - The gutter shows the single new-line number and a blank change bar; highlighting, wrapping, horizontal scroll, line selection, and comments behave exactly as in Diff view.
-- Folding is off, so the whole file is shown; a `binary` or `too_large` file degrades to its notice as in Diff view.
+- Folding is off, so the whole file is shown; a `binary` or `too_large` file degrades to a notice as it does in Diff view (the `too_large` wording differs: `file too large` here, `file too large to diff` there).
 
 ### Color
 

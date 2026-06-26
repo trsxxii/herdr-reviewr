@@ -1063,6 +1063,24 @@ fn scope_cannot_change_while_composing() {
 }
 
 #[test]
+fn tab_cannot_change_while_composing() {
+    use herdr_review::app::Tab;
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    app.focus = Focus::Diff;
+    app.diff_cursor = row_with(&app, '+');
+    app.start_comment();
+    app.input_push('x');
+
+    // A tab switch mid-comment must be a no-op, so the panes never swap out from under the
+    // open composer (the compose-freeze invariant), matching set_scope.
+    app.set_tab(Tab::AllFiles).unwrap();
+    assert_eq!(app.tab, Tab::Changes, "the tab is frozen mid-comment");
+    assert!(app.composing(), "still composing");
+    assert_eq!(app.input, "x", "input untouched");
+}
+
+#[test]
 fn the_app_reads_branch_scoped_diffs_not_working_tree() {
     let r = Repo::init();
     r.write("shared.rs", "base\n");
@@ -1613,4 +1631,95 @@ fn switching_to_an_empty_file_view_focuses_the_tree() {
     app.set_tab(Tab::AllFiles).unwrap();
     assert!(app.visible.is_empty(), "the deleted file's content view is empty");
     assert_eq!(app.focus, Focus::Files, "an empty left pane focuses the tree, not traps the keys");
+}
+
+#[test]
+fn a_diff_comment_does_not_render_in_the_file_view() {
+    use herdr_review::app::Tab;
+    use herdr_review::diff::View;
+    let r = Repo::init();
+    r.write("a.rs", "alpha\nbeta\ngamma\n");
+    r.commit_all("init");
+    r.write("a.rs", "alpha\nBETA\ngamma\n"); // a.rs changed
+    let mut app = app_on(&r);
+    app.focus = Focus::Diff;
+    app.diff_cursor = row_with(&app, '+'); // the +BETA insertion
+    app.start_comment();
+    app.input_push('x');
+    app.submit_comment();
+    assert!(app.store.get(0).unwrap().diff_anchored, "made in the Changes diff");
+    assert!(!app.commented_lines().is_empty(), "renders in its own diff view");
+
+    // In All files, open a.rs as content: the diff-anchored comment must not bleed in.
+    app.set_tab(Tab::AllFiles).unwrap();
+    let row = file_row_of(&app, "a.rs").expect("a.rs listed");
+    app.select_file(row).unwrap();
+    assert_eq!(app.diff.view, View::File);
+    assert!(
+        app.commented_lines().is_empty(),
+        "a diff-anchored comment does not render in the File view"
+    );
+}
+
+#[test]
+fn editing_a_comment_on_all_files_opens_the_file_view() {
+    use herdr_review::app::Tab;
+    use herdr_review::diff::View;
+    let r = Repo::init();
+    r.write("a.rs", "alpha\nbeta\n");
+    r.write("b.rs", "one\ntwo\n");
+    r.commit_all("init");
+    let mut app = app_on(&r);
+    app.set_tab(Tab::AllFiles).unwrap();
+    // A content comment on a.rs.
+    let arow = file_row_of(&app, "a.rs").expect("a.rs listed");
+    app.select_file(arow).unwrap();
+    app.focus = Focus::Diff;
+    app.diff_cursor = 0;
+    app.start_comment();
+    app.input_push('x');
+    app.submit_comment();
+    // Open b.rs, so the comment's file is not the one shown.
+    let brow = file_row_of(&app, "b.rs").expect("b.rs listed");
+    app.select_file(brow).unwrap();
+    assert_eq!(app.diff_path.as_deref(), Some("b.rs"));
+
+    // Edit the comment from the list: it must bring a.rs back as a File view, not a diff.
+    app.open_list();
+    app.start_edit();
+    assert_eq!(app.diff_path.as_deref(), Some("a.rs"));
+    assert_eq!(app.diff.view, View::File, "editing on All files opens the File view, not a diff");
+    assert!(app.composing());
+}
+
+#[test]
+fn changing_scope_on_all_files_snaps_the_changes_diff_to_the_top() {
+    use std::fmt::Write as _;
+
+    use herdr_review::app::Tab;
+    let r = Repo::init();
+    let mut body = String::new();
+    for i in 0..40 {
+        writeln!(body, "line {i}").unwrap();
+    }
+    r.write("a.rs", &body);
+    r.commit_all("base");
+    r.git(&["checkout", "-b", "feature"]);
+    r.write("a.rs", &body.replace("line 5", "LINE 5"));
+    r.commit_all("feature edit"); // a.rs differs from base → changed in branch scope
+    r.write("a.rs", &body.replace("line 5", "LINE 5").replace("line 30", "LINE 30")); // uncommitted
+
+    let mut app = app_on(&r); // Uncommitted scope; a.rs open in Changes
+    app.focus = Focus::Diff;
+    app.diff_cursor = 2;
+    app.diff_scroll = 1;
+
+    // Change scope while on All files, then return to Changes.
+    app.set_tab(Tab::AllFiles).unwrap();
+    app.set_scope(Scope::Branch).unwrap();
+    app.set_tab(Tab::Changes).unwrap();
+
+    assert!(app.entries.iter().any(|e| e.path == "a.rs"), "a.rs is in the branch changeset");
+    assert_eq!(app.diff_scroll, 0, "an explicit scope switch snaps the Changes diff to the top");
+    assert_eq!(app.diff_cursor, 0);
 }

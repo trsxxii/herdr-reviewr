@@ -61,11 +61,6 @@ impl Entry {
             }),
         }
     }
-
-    /// An `All files` entry from a bare path: no rename source, no annotation.
-    pub fn plain(path: String) -> Self {
-        Self { path, previous_path: None, annotation: None }
-    }
 }
 
 impl Row {
@@ -284,9 +279,10 @@ mod tests {
     }
 
     #[test]
-    fn a_plain_entry_carries_no_annotation() {
+    fn an_unannotated_entry_renders_without_a_marker() {
         // An `All files` entry from a bare path renders without a marker or stats.
-        let rows = build(&[Entry::plain("a.rs".into())], &HashSet::new(), false);
+        let entry = Entry { path: "a.rs".into(), previous_path: None, annotation: None };
+        let rows = build(&[entry], &HashSet::new(), false);
         assert!(matches!(rows[0].kind, RowKind::File { annotation: None, .. }));
     }
 }

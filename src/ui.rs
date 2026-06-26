@@ -366,7 +366,7 @@ pub fn hit_header(area: Rect, app: &App, col: u16, row: u16) -> Option<HeaderHit
     }
     let scope_start = header_prefix_len() as u16;
     let scope_end = scope_start + scope_chip(app).len() as u16;
-    let button_start = area.width.saturating_sub(send_button(app).len() as u16);
+    let button_start = send_button_col(app, area.width as usize) as u16;
     if (scope_start..scope_end).contains(&col) {
         Some(HeaderHit::Scope)
     } else if col >= button_start && col < area.width {
@@ -411,11 +411,24 @@ fn send_button(app: &App) -> String {
     format!("[ Send ({}) ]", app.store.len())
 }
 
+/// The header suffix: the active scope's changed-file count. Shared so the painter and the
+/// hit-test place the right-aligned `Send` button at the same column.
+fn header_suffix(app: &App) -> String {
+    format!("  {} changed", app.changed_count())
+}
+
+/// The column the `Send` button paints at, matching `render_tab_bar`'s layout: right-aligned
+/// when the header fits, packed left right after the suffix when the bar overflows (`pad`
+/// collapses to 0). `hit_header` must use this, not a bare right-alignment, or a `Send` click
+/// mis-fires (and on a narrow sidebar lands in a tab span) when the header overflows.
+fn send_button_col(app: &App, width: usize) -> usize {
+    let before = header_prefix_len() + scope_chip(app).len() + header_suffix(app).len();
+    before + width.saturating_sub(before + send_button(app).len())
+}
+
 fn render_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
     let chip = scope_chip(app);
-    // The count is the active scope's changeset on both tabs — `changed` names it consistently,
-    // and stops it reading as a miscount of the whole-worktree tree in `All files`.
-    let suffix = format!("  {} changed", app.changed_count());
+    let suffix = header_suffix(app);
     let button = send_button(app);
     let used = header_prefix_len() + chip.len() + suffix.len() + button.len();
     let pad = (area.width as usize).saturating_sub(used);

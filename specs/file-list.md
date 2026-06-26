@@ -24,7 +24,7 @@ The list groups the scope's changed files into a collapsible tree of directories
  ?  herdr-plugin.toml          +25
 ```
 
-In the `All files` tab the same navigator lists the whole worktree — every git-tracked file plus untracked files git does not ignore. A file the active scope changed keeps its marker and stats; the rest show name only.
+In the `All files` tab the same navigator lists the whole worktree — every git-tracked file plus untracked files git does not ignore. A file the active scope changed keeps its marker and stats; the rest show name only (directories shown expanded here to surface the annotations; the tab opens them collapsed).
 
 ```
  src/

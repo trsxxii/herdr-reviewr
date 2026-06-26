@@ -304,7 +304,7 @@ impl App {
             return Ok(());
         }
         // Keep the cursor on the same row target across the rebuild; fall back to the open
-        // file, then the first file. The collapsed-directory set survives untouched.
+        // file, then the first file. The toggled-directory set survives untouched.
         let anchor = self.cursor_anchor();
         let open = self.diff_path.clone();
         // The active scope's changeset, computed regardless of tab so the changed-file count
@@ -401,9 +401,9 @@ impl App {
         // bundle) is one keystroke away in `All files`, and reading it whole would spike the UI
         // thread before `build_file`'s budget could discard it (specs/diff-view.md).
         let oversize = std::fs::metadata(self.repo.join(&path))
-            .is_ok_and(|m| m.len() as usize > crate::diff::MAX_BYTES);
+            .is_ok_and(|m| crate::diff::over_byte_budget(m.len() as usize));
         self.diff = if oversize {
-            FileDiff::file_too_large(path)
+            FileDiff::too_large_notice(path)
         } else {
             let content = worktree_content(&self.repo, &path);
             self.cache.get_file(path, &content, &self.highlighter)
@@ -650,15 +650,25 @@ impl App {
     pub fn set_scope(&mut self, scope: Scope) -> Result<()> {
         if self.scope != scope && !self.composing() {
             self.scope = scope;
-            // On `Changes` the changeset (and each file's old side) changes with the scope, so
-            // reset the cursor, drop cached diffs, and snap the diff to the top. On `All files`
-            // the listing and the File view are scope-independent — only the annotations move —
-            // so hold the cursor, scroll, and folds and let `reload` re-mark in place.
+            // A scope switch changes the Changes changeset (and each file's old side), so the
+            // Changes tab snaps to the top of the new scope: reset its cursor, folds, and diff
+            // scroll, and drop cached diffs. The `All files` listing and File view are
+            // scope-independent (only the annotations move), so its own state is held by `reload`.
+            // The Changes state is the active one on `Changes` and the stashed one while `All
+            // files` is shown — reset whichever holds it, so a return to Changes never lands on a
+            // stale scroll or a pre-expanded fold.
+            self.cache = DiffCache::new();
             if self.tab == Tab::Changes {
                 self.file_cursor = 0;
-                self.cache = DiffCache::new();
                 self.expanded_folds.clear();
                 self.reset_diff_view();
+            } else {
+                self.stash.file_cursor = 0;
+                self.stash.expanded_folds.clear();
+                self.stash.diff_cursor = 0;
+                self.stash.diff_scroll = 0;
+                self.stash.h_scroll = 0;
+                self.stash.select_anchor = None;
             }
             self.reload()?;
             // An explicit switch reveals the cursor (a poll, which also calls reload, does not).
@@ -688,8 +698,9 @@ impl App {
         Ok(())
     }
 
-    /// Exchange the active per-tab fields with the inactive tab's saved snapshot. Every
-    /// per-tab field is swapped, so neither tab's selection or scroll bleeds into the other.
+    /// Exchange the active per-tab fields with the inactive tab's saved snapshot. Every per-tab
+    /// field on `App` must be swapped here — a new per-tab field left out silently bleeds one
+    /// tab's selection or scroll into the other.
     fn swap_active_with_stash(&mut self) {
         std::mem::swap(&mut self.entries, &mut self.stash.entries);
         std::mem::swap(&mut self.file_rows, &mut self.stash.file_rows);
@@ -953,7 +964,12 @@ impl App {
             && let Some(e) = self.entries.iter().find(|e| e.path == file).cloned()
         {
             self.reset_diff_view();
-            self.set_diff(e.path, e.previous_path);
+            // Open it in the active tab's view — the File view on `All files`, not a diff — so
+            // the pane and the comment's anchor kind stay consistent with the tab.
+            match self.tab {
+                Tab::Changes => self.set_diff(e.path, e.previous_path),
+                Tab::AllFiles => self.set_file_view(e.path),
+            }
             if let Some(fi) = self.file_row_of_path(&file) {
                 self.file_cursor = fi;
             }
@@ -1211,6 +1227,14 @@ impl App {
         }
     }
 
+    /// Whether comment `c` anchors to the pane's current view — a diff comment to the Diff view,
+    /// a content comment to the File view. Stops a comment of one kind rendering on, or being
+    /// acted on at, an unrelated line in the other tab's view of the same file (the diff's line
+    /// numbering and the File view's worktree line numbering differ; specs/review-model.md).
+    fn comment_in_view(&self, c: &Comment) -> bool {
+        c.diff_anchored == (self.diff.view == View::Diff)
+    }
+
     /// Row indices on the open diff's file that a comment anchors to.
     pub fn commented_lines(&self) -> HashSet<usize> {
         let Some(file) = self.diff_path.clone() else {
@@ -1219,7 +1243,11 @@ impl App {
         self.visible
             .iter()
             .enumerate()
-            .filter(|(_, row)| self.store.iter().any(|c| c.file == file && line_in(c, row)))
+            .filter(|(_, row)| {
+                self.store
+                    .iter()
+                    .any(|c| c.file == file && self.comment_in_view(c) && line_in(c, row))
+            })
             .map(|(i, _)| i)
             .collect()
     }
@@ -1232,6 +1260,7 @@ impl App {
         let Some(file) = self.diff_path.as_deref() else { return cards };
         for (ci, c) in self.store.iter().enumerate() {
             if c.file == file
+                && self.comment_in_view(c)
                 && let Some(last) = self.visible.iter().rposition(|row| line_in(c, row))
             {
                 cards[last].push(ci);
@@ -1253,7 +1282,7 @@ impl App {
     fn comment_under_cursor(&self) -> Option<usize> {
         let file = self.diff_path.as_deref()?;
         let row = self.visible.get(self.diff_cursor)?;
-        self.store.iter().position(|c| c.file == file && line_in(c, row))
+        self.store.iter().position(|c| c.file == file && self.comment_in_view(c) && line_in(c, row))
     }
 
     pub fn delete_comment(&mut self) {

@@ -141,9 +141,15 @@ pub struct FileDiff {
 /// A file beyond either budget renders as `too_large` rather than stalling the diff —
 /// the byte budget also catches a single huge line that the line budget misses.
 const MAX_LINES: usize = 50_000;
-/// The byte budget. A file larger than this renders as a `too_large` notice; `set_file_view`
-/// checks the on-disk size against it and skips the read entirely (`app.rs`).
-pub const MAX_BYTES: usize = 2_000_000;
+/// The byte budget. A file larger than this renders as a `too_large` notice.
+const MAX_BYTES: usize = 2_000_000;
+
+/// Whether a file of `len` bytes is over the size budget. `set_file_view` checks the on-disk
+/// size with this before reading, so an oversize blob never loads (`app.rs`).
+#[must_use]
+pub fn over_byte_budget(len: usize) -> bool {
+    len > MAX_BYTES
+}
 
 impl Default for FileDiff {
     fn default() -> Self {
@@ -236,7 +242,7 @@ impl FileDiff {
     /// Build the File view: the whole current `content` as `Context` rows, syntax-highlighted,
     /// with no folds, change rows, or emphasis. Powers the `All files` tab (specs/diff-view.md).
     /// Degrades to a `binary` or `too_large` notice on the same budgets as [`build`](Self::build).
-    pub fn build_file(path: String, content: &str, hl: &Highlighter) -> Self {
+    fn build_file(path: String, content: &str, hl: &Highlighter) -> Self {
         let notice = |state| Self {
             path: path.clone(),
             previous_path: None,
@@ -268,7 +274,7 @@ impl FileDiff {
 
     /// The File-view `too_large` notice, for an over-budget file the caller declines to read.
     /// `set_file_view` checks the on-disk size and builds this rather than reading the bytes.
-    pub fn file_too_large(path: String) -> Self {
+    pub fn too_large_notice(path: String) -> Self {
         Self {
             path,
             previous_path: None,

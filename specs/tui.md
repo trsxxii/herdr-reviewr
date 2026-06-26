@@ -11,7 +11,7 @@ The terminal interface: how the review is laid out, how you drive it by keyboard
 ## Overview
 
 ```
-┌ Changes [uncommitted]  9 files ──────────────────────────── [ Send (3) ] ┐
+┌ 1 Changes  2 All files  [uncommitted]  9 changed ───────── [ Send (3) ] ┐
 │ ⋯  11 unmodified lines                       │ M llm_registry.py  +18 -8  │
 │ 40    def resolve(self, name):               │ M deep_research.py +155-62 │
 │ 41 ▌  from .z import w                         │ D old_runner.py    -47     │
@@ -22,11 +22,11 @@ The terminal interface: how the review is laid out, how you drive it by keyboard
 │  └─────────────────────────────────────────┘ │                            │
 │ 42    return registry[name]                   │                            │
 ├───────────────────────────────────────────────┴──────────────────────────┤
-│ 9 file(s) · 3 comment(s)  tab focus · c comment · s send · y copy · l list │
+│ 9 changed · 3 comment(s)  1/2 tab · ⇥ pane · c comment · s send · l list │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- The header shows the active tab, the scope, the count of files changed in the scope, and a clickable `Send` button with the comment count.
+- The header shows both tabs with the active one highlighted, the scope, the count of files changed in the scope, and a clickable `Send` button with the comment count.
 - The left pane is the selected file's diff — syntax-highlighted, with line numbers, change bars, word-level emphasis, and foldable context, defined in `diff-view.md`.
 - The right pane is the changed-files navigator for the current scope — a directory tree, defined in `file-list.md`.
 - Comments are one set across both tabs and export together; each tab otherwise owns its state (see **Tabs**).
