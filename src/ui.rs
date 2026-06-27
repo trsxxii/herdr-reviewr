@@ -34,8 +34,8 @@ pub fn render(frame: &mut Frame, app: &App) {
         render_diff_view(frame, app, p.diff);
         render_file_list(frame, app, p.files);
     }
-    // One footer band on every tab, then any modal overlay on top (the keys overlay can open
-    // from the PR tab too, so it is drawn here, past the per-tab base).
+    // One footer band on every tab, drawn after the per-tab base so it sits on both layouts;
+    // then the comments-list modal on top when it is open.
     render_footer(frame, app, p.status);
 
     if app.mode == Mode::List {
@@ -1116,7 +1116,7 @@ fn render_composer(frame: &mut Frame, app: &App, area: Rect) {
 
 /// The key glyph and label for a footer action; an empty label renders the glyph alone. The
 /// `TogglePane` and `Send` labels depend on `app` (the destination pane, the comment count).
-fn action_kl(app: &App, action: FooterAction) -> (String, String) {
+fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
     use FooterAction as A;
     let (k, l): (&str, &str) = match action {
         A::Comment => ("c", "comment"),
@@ -1155,7 +1155,9 @@ fn tier_styles(tier: Tier) -> (Style, Style) {
             (Style::default().fg(cat::PEACH).add_modifier(Modifier::BOLD), text_style())
         }
         Tier::Normal => (Style::default().fg(cat::LAVENDER), Style::default().fg(cat::SUBTEXT0)),
-        Tier::Orient => (Style::default().fg(cat::OVERLAY0), Style::default().fg(cat::OVERLAY0)),
+        Tier::Orientation => {
+            (Style::default().fg(cat::OVERLAY0), Style::default().fg(cat::OVERLAY0))
+        }
     }
 }
 
@@ -1166,7 +1168,7 @@ fn action_spans(app: &App, acts: &[(FooterAction, Tier)]) -> Vec<Span<'static>> 
         if i > 0 {
             spans.push(Span::styled(" · ", Style::default().fg(cat::OVERLAY0)));
         }
-        let (key, label) = action_kl(app, action);
+        let (key, label) = action_key_label(app, action);
         let (key_style, label_style) = tier_styles(tier);
         spans.push(Span::styled(key, key_style));
         if !label.is_empty() {
@@ -1183,7 +1185,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     let w = area.width as usize;
     let all = app.footer_actions();
     let (mut left_acts, orient_acts): (Vec<_>, Vec<_>) =
-        all.into_iter().partition(|&(_, t)| t != Tier::Orient);
+        all.into_iter().partition(|&(_, t)| t != Tier::Orientation);
 
     // The read-only PR tab leads with the PR's state summary; the transient status sits among
     // the actions and never displaces them.
@@ -1227,15 +1229,18 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         // Orientation is dropped; trim trailing `Normal` actions until the line fits, leaving
         // room for the `…` that marks the drop. The primary action is never trimmed.
         let dropped_orient = !orient.is_empty();
+        let mut popped = false;
         while line_width(&left) + 2 > w
             && left_acts.len() > 1
             && left_acts.last().is_some_and(|&(_, t)| t == Tier::Normal)
         {
             left_acts.pop();
+            popped = true;
             left = build_left(&left_acts);
         }
-        let trimmed = dropped_orient || line_width(&left) + 2 > w || left_acts.is_empty();
-        if trimmed {
+        // `…` whenever anything was clipped: the orientation cluster, a trimmed action, or a
+        // primary still too wide to fit.
+        if dropped_orient || popped || line_width(&left) + 2 > w {
             left.push(Span::styled(" …", Style::default().fg(cat::OVERLAY0)));
         }
         left

@@ -118,12 +118,12 @@ pub enum FooterAction {
 }
 
 /// A footer action's visual weight, and its survival priority when the line is too narrow:
-/// `Orient` is dropped first, then trailing `Normal` actions; `Primary` is never dropped.
+/// `Orientation` is dropped first, then trailing `Normal` actions; `Primary` is never dropped.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tier {
     Primary,
     Normal,
-    Orient,
+    Orientation,
 }
 
 /// The full state of the review session.
@@ -1508,7 +1508,7 @@ impl App {
     #[must_use]
     pub fn footer_actions(&self) -> Vec<(FooterAction, Tier)> {
         use FooterAction as A;
-        use Tier::{Normal, Orient, Primary};
+        use Tier::{Normal, Orientation, Primary};
 
         // A modal sub-task owns the whole bar — no tab/quit orientation while you're in one.
         match self.mode {
@@ -1527,15 +1527,17 @@ impl App {
             Mode::Normal => {}
         }
 
-        // The read-only PR tab: the state summary leads (rendered separately); `o open` is the act.
+        // The read-only PR tab: the state summary leads (rendered separately); `o open` is the
+        // act — available for any resolved PR, not only while a comment is selected, since `o`
+        // opens the PR URL itself (`pr_open`).
         if self.tab == Tab::Pr {
             let mut out = Vec::new();
-            if self.pr_selected_comment().is_some() {
+            if self.pr_snapshot().is_some() {
                 out.push((A::OpenPr, Primary));
             }
-            out.push((A::Tabs, Orient));
-            out.push((A::Refresh, Orient));
-            out.push((A::Quit, Orient));
+            out.push((A::Tabs, Orientation));
+            out.push((A::Refresh, Orientation));
+            out.push((A::Quit, Orientation));
             return out;
         }
 
@@ -1579,19 +1581,20 @@ impl App {
             out.push((A::Scope, Normal));
         }
 
-        // Once a comment is written, sending is the next relevant move — just below the primary.
+        // Once a comment is written, sending is the next relevant move — just below the primary
+        // (every branch above pushed a primary, so index 1 is in range).
         if !self.store.is_empty() {
-            out.insert(1.min(out.len()), (A::Send, Normal));
+            out.insert(1, (A::Send, Normal));
             out.push((A::List, Normal));
         }
 
         // The dim, stable orientation cluster: the pane toggle (unless it is already the
         // primary), the tabs, quit.
         if !pane_is_primary && !self.file_rows.is_empty() {
-            out.push((A::TogglePane, Orient));
+            out.push((A::TogglePane, Orientation));
         }
-        out.push((A::Tabs, Orient));
-        out.push((A::Quit, Orient));
+        out.push((A::Tabs, Orientation));
+        out.push((A::Quit, Orientation));
         out
     }
 

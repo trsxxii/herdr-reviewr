@@ -55,6 +55,7 @@ Every action has a keyboard binding. The mouse-relevant ones also work by click 
 | toggle line wrap | `w` | — |
 | resize the panes — widen / narrow the file list | `]` / `[` | drag the divider between the panes |
 | select a line range, removed lines included | `v` then move | click-drag in the diff |
+| clear the line selection | `esc` | — |
 | comment on the selection (opens the editor below — see Comment editor) | `c`, type, `enter` | after a drag-select |
 | edit the comment under the cursor | `e` | — |
 | delete the comment under the cursor | `d` | — |
@@ -80,7 +81,7 @@ The footer is a live action bar: it shows the actions available for what you are
 - **Primary action** — the most likely next step, in a bright accent, always shown.
 - **Other available actions** — what else works here, in normal text.
 - **Send** — `s send N`, with the comment count riding the action; it rises to just below the primary once any comment is written, and is absent when none are.
-- **Orientation** — a dim, stable cluster at the right (`⇥ pane · 1·2·3 tab · q quit`, less the pane toggle on `PR`); the only fixed part, dropped first when space is tight.
+- **Orientation** — a dim, stable cluster at the right — the pane toggle, the tab digits, and quit (`⇥ files · 1·2·3 · q`, less the pane toggle on `PR`); the only fixed part, dropped first when space is tight.
 - **Transient status** — a message like `comment added` shows briefly among the actions and fades; it never replaces them.
 
 The bar is one line, filled by priority — primary, then send, then the other actions, then orientation — until the width runs out; a trailing `…` marks anything clipped. Movement keys aren't shown: moving the cursor is obvious. The comment editor and the comments list show their own actions (see those sections).
@@ -93,7 +94,7 @@ The actions follow the cursor:
 | A live selection | `c comment` | `esc clear` |
 | A commented line | `e edit` | `d delete · n/N jump` |
 | A fold | `→ expand fold` | — |
-| A file (file list) | `⇥ review diff` | — |
+| A file (file list) | `⇥ diff` | — |
 | A collapsed directory | `→ expand` | — |
 | An expanded directory | `← collapse` | — |
 | Nothing to review (awaiting a turn) | `u/b/t scope` | `r refresh` |

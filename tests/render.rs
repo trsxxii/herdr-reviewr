@@ -39,6 +39,13 @@ fn render_buffer(app: &App) -> Buffer {
     terminal.backend().buffer().clone()
 }
 
+/// Render at a specific width (height fixed), for footer fit-to-width assertions.
+fn render_at(app: &App, width: u16) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
+    terminal.draw(|f| ui::render(f, app)).unwrap();
+    dump(terminal.backend().buffer())
+}
+
 /// Catppuccin surface2 — the shared selection/cursor fill.
 const SELECTION_BG: ratatui::style::Color = ratatui::style::Color::Rgb(0x58, 0x5b, 0x70);
 /// Catppuccin peach — the comment-editor caret block.
@@ -342,6 +349,23 @@ fn the_footer_shows_the_action_for_the_context() {
     assert!(footer.contains("c comment"), "a diff line offers comment:\n{footer}");
     assert!(footer.contains("v select"), "and selecting a range:\n{footer}");
     assert!(!footer.contains("changed"), "the changed count is not in the footer:\n{footer}");
+}
+
+#[test]
+fn the_footer_drops_to_fit_and_marks_the_clip() {
+    let mut app = edited_app();
+    on_changed_line(&mut app); // diff focus, content line → c comment · v select · …
+    // Wide: every action fits, nothing is clipped.
+    let wide = footer_line(&render_at(&app, 120));
+    assert!(
+        wide.contains("c comment") && wide.contains("v select") && !wide.contains('…'),
+        "wide footer shows all actions, no clip marker:\n{wide}"
+    );
+    // Narrow: the primary survives, the least-relevant actions are trimmed, and `…` marks it.
+    let narrow = footer_line(&render_at(&app, 18));
+    assert!(narrow.contains("c comment"), "the primary action is never dropped:\n{narrow}");
+    assert!(narrow.contains('…'), "the clip is marked with …:\n{narrow}");
+    assert!(!narrow.contains("v select"), "the least-relevant action is trimmed:\n{narrow}");
 }
 
 #[test]

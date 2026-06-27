@@ -470,6 +470,42 @@ fn the_footer_offers_scope_everywhere_on_a_file_tab() {
 }
 
 #[test]
+fn the_pr_footer_offers_open_for_any_resolved_pr() {
+    use herdr_reviewr::app::Tab;
+    use herdr_reviewr::forge::{Merge, PrSnapshot, PrState, PrView, Sync};
+
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    app.set_tab(Tab::Pr).unwrap();
+    // No resolved PR (still loading): nothing to open.
+    assert!(
+        !app.footer_actions().iter().any(|&(a, _)| a == FooterAction::OpenPr),
+        "no resolved PR → no open action"
+    );
+
+    // A resolved PR with zero comments still offers `o open` — `o` opens the PR URL, not a comment.
+    app.pr = PrView::Pr(Box::new(PrSnapshot {
+        number: 7,
+        title: "t".into(),
+        url: "u".into(),
+        state: PrState::Open,
+        is_draft: false,
+        base_ref: "main".into(),
+        merge: Merge::Clean,
+        sync: Sync::InSync,
+        checks: vec![],
+        comments: vec![],
+        truncated: false,
+    }));
+    assert!(app.pr_selected_comment().is_none(), "zero comments → nothing selected");
+    assert_eq!(
+        app.footer_actions().first().map(|&(a, _)| a),
+        Some(FooterAction::OpenPr),
+        "a resolved PR offers open even with no comments"
+    );
+}
+
+#[test]
 fn the_footer_offers_send_only_once_a_comment_exists() {
     let mut app = composing_app();
     app.cancel_comment();
