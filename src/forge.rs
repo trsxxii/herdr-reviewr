@@ -569,10 +569,10 @@ fn parse_iso(s: &str) -> Option<i64> {
     // Days from the civil date (Howard Hinnant's algorithm), then to seconds.
     let y = if mo <= 2 { y - 1 } else { y };
     let era = (if y >= 0 { y } else { y - 399 }) / 400;
-    let yoe = y - era * 400;
-    let doy = (153 * (if mo > 2 { mo - 3 } else { mo + 9 }) + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
+    let year_of_era = y - era * 400;
+    let day_of_year = (153 * (if mo > 2 { mo - 3 } else { mo + 9 }) + 2) / 5 + d - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = era * 146_097 + day_of_era - 719_468;
     Some(days * 86_400 + h * 3600 + mi * 60 + se)
 }
 
