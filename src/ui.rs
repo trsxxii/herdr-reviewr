@@ -1188,9 +1188,13 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         all.into_iter().partition(|&(_, t)| t != Tier::Orientation);
 
     // The read-only PR tab leads with the PR's state summary; the transient status sits among
-    // the actions and never displaces them.
+    // the actions and never displaces them. The state line is capped so a long one never crowds
+    // the primary action (and the `…`) off the line — leaving room for the actions plus the marker.
+    let actions_w: usize = action_spans(app, &left_acts).iter().map(Span::width).sum();
     let pr_info = (app.tab == Tab::Pr).then(|| app.pr_snapshot()).flatten().map(|s| {
-        Span::styled(format!("{}   ", pr_state_line(s)), Style::default().fg(cat::SUBTEXT0))
+        let budget = w.saturating_sub(actions_w + 4).max(8);
+        let text = truncate_width(&format!("{}   ", pr_state_line(s)), budget);
+        Span::styled(text, Style::default().fg(cat::SUBTEXT0))
     });
     let status = (!app.status.is_empty())
         .then(|| Span::styled(format!("  · {} ", app.status), Style::default().fg(cat::PEACH)));

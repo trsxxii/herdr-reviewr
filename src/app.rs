@@ -1511,17 +1511,20 @@ impl App {
         use Tier::{Normal, Orientation, Primary};
 
         // A modal sub-task owns the whole bar — no tab/quit orientation while you're in one.
+        // The escape action comes right after the primary so the exit hint survives a
+        // narrow-width trim (trailing actions are dropped first); modals have no orientation
+        // cluster to carry it otherwise.
         match self.mode {
             Mode::Composing { .. } => {
-                return vec![(A::Save, Primary), (A::Newline, Normal), (A::Cancel, Normal)];
+                return vec![(A::Save, Primary), (A::Cancel, Normal), (A::Newline, Normal)];
             }
             Mode::List => {
                 return vec![
                     (A::Send, Primary),
+                    (A::CloseList, Normal),
                     (A::Copy, Normal),
                     (A::EditComment, Normal),
                     (A::DeleteComment, Normal),
-                    (A::CloseList, Normal),
                 ];
             }
             Mode::Normal => {}
@@ -1566,7 +1569,7 @@ impl App {
         } else if self.select_anchor.is_some() {
             out.push((A::Comment, Primary));
             out.push((A::ClearSelection, Normal));
-        } else if self.commented_lines().contains(&self.diff_cursor) {
+        } else if self.comment_under_cursor().is_some() {
             out.push((A::EditComment, Primary));
             out.push((A::DeleteComment, Normal));
             out.push((A::JumpComment, Normal));

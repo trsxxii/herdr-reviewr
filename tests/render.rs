@@ -369,6 +369,34 @@ fn the_footer_drops_to_fit_and_marks_the_clip() {
 }
 
 #[test]
+fn the_pr_footer_keeps_the_open_action_when_the_state_line_is_long() {
+    use herdr_reviewr::app::Tab;
+    use herdr_reviewr::forge::{Check, CheckStatus, Merge, PrSnapshot, PrState, PrView, Sync};
+    let r = Repo::init();
+    r.write("x.rs", "y\n");
+    r.commit_all("init");
+    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    app.reload().unwrap();
+    app.set_tab(Tab::Pr).unwrap();
+    app.pr = PrView::Pr(Box::new(PrSnapshot {
+        number: 226,
+        title: "t".into(),
+        url: "u".into(),
+        state: PrState::Open,
+        is_draft: false,
+        base_ref: "main".into(),
+        merge: Merge::Conflicting, // a long state line: conflicts · behind · failing · +more
+        sync: Sync::Behind(3),
+        checks: vec![Check { name: "ci".into(), status: CheckStatus::Failure }],
+        comments: vec![],
+        truncated: true,
+    }));
+    // At narrow width the state line is capped so the primary `o open ↗` is never crowded off.
+    let footer = footer_line(&render_at(&app, 60));
+    assert!(footer.contains("o open"), "the open action survives a long state line:\n{footer}");
+}
+
+#[test]
 fn the_footer_keeps_its_actions_alongside_a_status() {
     let mut app = edited_app();
     on_changed_line(&mut app);
