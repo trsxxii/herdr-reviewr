@@ -39,6 +39,13 @@ fn render_buffer(app: &App) -> Buffer {
     terminal.backend().buffer().clone()
 }
 
+/// Render at a specific width (height fixed), for footer fit-to-width assertions.
+fn render_at(app: &App, width: u16) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
+    terminal.draw(|f| ui::render(f, app)).unwrap();
+    dump(terminal.backend().buffer())
+}
+
 /// Catppuccin surface2 — the shared selection/cursor fill.
 const SELECTION_BG: ratatui::style::Color = ratatui::style::Color::Rgb(0x58, 0x5b, 0x70);
 /// Catppuccin peach — the comment-editor caret block.
@@ -320,18 +327,87 @@ fn shows_tab_bar_file_list_and_diff() {
     assert!(out.contains("uncommitted"), "current scope shown");
     assert!(out.contains("hello.rs"), "file appears in the list");
     assert!(out.contains("BETA"), "diff content is rendered");
-    assert!(out.contains("changed"), "status bar shows the changed count");
+    assert!(out.contains("changed"), "the header shows the changed count");
+}
+
+/// The last non-blank rendered row — the footer band.
+fn footer_line(out: &str) -> String {
+    out.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or_default().to_string()
+}
+
+/// Focus the diff on its first changed line.
+fn on_changed_line(app: &mut App) {
+    app.focus = Focus::Diff;
+    app.diff_cursor = app.visible.iter().position(|r| r.marker() == '+').unwrap();
 }
 
 #[test]
-fn the_footer_hints_wrap_instead_of_truncating() {
-    let app = edited_app();
-    // At a narrow width the Normal-mode hint line is far longer than the pane, so without
-    // wrapping the last hint ("quit") would be cut off the right edge.
-    let mut terminal = Terminal::new(TestBackend::new(60, 24)).unwrap();
-    terminal.draw(|f| ui::render(f, &app)).unwrap();
-    let out = dump(terminal.backend().buffer());
-    assert!(out.contains("quit"), "the wrapped footer keeps its last hint:\n{out}");
+fn the_footer_shows_the_action_for_the_context() {
+    let mut app = edited_app();
+    on_changed_line(&mut app);
+    let footer = footer_line(&render(&app));
+    assert!(footer.contains("c comment"), "a diff line offers comment:\n{footer}");
+    assert!(footer.contains("v select"), "and selecting a range:\n{footer}");
+    assert!(!footer.contains("changed"), "the changed count is not in the footer:\n{footer}");
+}
+
+#[test]
+fn the_footer_drops_to_fit_and_marks_the_clip() {
+    let mut app = edited_app();
+    on_changed_line(&mut app); // diff focus, content line → c comment · v select · …
+    // Wide: every action fits, nothing is clipped.
+    let wide = footer_line(&render_at(&app, 120));
+    assert!(
+        wide.contains("c comment") && wide.contains("v select") && !wide.contains('…'),
+        "wide footer shows all actions, no clip marker:\n{wide}"
+    );
+    // Narrow: the primary survives, the least-relevant actions are trimmed, and `…` marks it.
+    let narrow = footer_line(&render_at(&app, 18));
+    assert!(narrow.contains("c comment"), "the primary action is never dropped:\n{narrow}");
+    assert!(narrow.contains('…'), "the clip is marked with …:\n{narrow}");
+    assert!(!narrow.contains("v select"), "the least-relevant action is trimmed:\n{narrow}");
+}
+
+#[test]
+fn the_pr_footer_keeps_the_open_action_when_the_state_line_is_long() {
+    use herdr_reviewr::app::Tab;
+    use herdr_reviewr::forge::{Check, CheckStatus, Merge, PrSnapshot, PrState, PrView, Sync};
+    let r = Repo::init();
+    r.write("x.rs", "y\n");
+    r.commit_all("init");
+    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    app.reload().unwrap();
+    app.set_tab(Tab::Pr).unwrap();
+    app.pr = PrView::Pr(Box::new(PrSnapshot {
+        number: 226,
+        title: "t".into(),
+        url: "u".into(),
+        state: PrState::Open,
+        is_draft: false,
+        base_ref: "main".into(),
+        merge: Merge::Conflicting, // a long state line: conflicts · behind · failing · +more
+        sync: Sync::Behind(3),
+        checks: vec![Check { name: "ci".into(), status: CheckStatus::Failure }],
+        comments: vec![],
+        truncated: true,
+    }));
+    // At narrow width the state line is capped so the primary `o open ↗` is never crowded off.
+    let footer = footer_line(&render_at(&app, 60));
+    assert!(footer.contains("o open"), "the open action survives a long state line:\n{footer}");
+}
+
+#[test]
+fn the_footer_keeps_its_actions_alongside_a_status() {
+    let mut app = edited_app();
+    on_changed_line(&mut app);
+    app.status = "comment added".to_string();
+    let footer = footer_line(&render(&app));
+    // A status sits among the actions, never replacing them.
+    assert!(footer.contains("comment added"), "the status shows:\n{footer}");
+    assert!(
+        footer.contains("c comment"),
+        "the primary action persists alongside a status:\n{footer}"
+    );
 }
 
 #[test]
@@ -547,9 +623,16 @@ fn all_files_tab_bar_footer_and_count_read_for_the_tab() {
     let out = render(&app);
     assert!(out.contains("1 Changes"), "tab labels carry their switch digit:\n{out}");
     assert!(out.contains("2 All files"));
-    assert!(out.contains("1 changed"), "the count is named 'changed' in All files:\n{out}");
-    assert!(out.contains("1/2 tab"), "the footer hints the tab keys:\n{out}");
-    assert!(!out.contains("tab focus"), "the colliding 'tab focus' hint is renamed:\n{out}");
+    assert!(
+        out.contains("1 changed"),
+        "the changed count stays in the header on All files:\n{out}"
+    );
+    let footer = footer_line(&out);
+    assert!(footer.contains("scope"), "the footer shows context actions on All files:\n{footer}");
+    assert!(
+        !footer.contains("changed"),
+        "the changed count is not repeated in the footer:\n{footer}"
+    );
 }
 
 #[test]
