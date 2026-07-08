@@ -40,7 +40,8 @@ From the herdr marketplace — a prebuilt binary, no Rust toolchain:
 herdr plugin install persiyanov/herdr-reviewr
 ```
 
-The sidebar **auto-opens for a newly created worktree** — installing the plugin is enough. To
+The sidebar **auto-opens for a newly created worktree** — installing the plugin is enough. It can
+also stay hidden until asked, with `auto_open = false` (see [Configuration](#configuration)). To
 toggle it on demand, bind a key to the **reviewr: toggle sidebar** action in your herdr config
 (keybindings live in user config, not the plugin manifest):
 
@@ -161,13 +162,24 @@ CLI flags on the pane command:
 | `--theme <name>` | `catppuccin` | UI + syntax theme (see below) |
 | `--wrap <on\|off>` | `on` | soft-wrap long diff lines (`w` toggles at runtime) |
 
+Everything else is set in reviewr's own config file:
+
+```text
+~/.config/herdr/plugins/config/persiyanov.reviewr/config.toml
+```
+
+Create the file if it does not exist yet. herdr hands this directory to the plugin as
+`$HERDR_PLUGIN_CONFIG_DIR`, but the path above is where it lives on disk. Note that this is
+reviewr's file, not herdr's — settings added to herdr's own `~/.config/herdr/config.toml` are
+never read by reviewr.
+
 ### Theme
 
 One theme colors the whole UI — chrome and syntax together. Set it in reviewr's config file
 (re-read on refresh, so editing it and refreshing re-themes without relaunch):
 
 ```toml
-# $HERDR_PLUGIN_CONFIG_DIR/config.toml
+# ~/.config/herdr/plugins/config/persiyanov.reviewr/config.toml
 theme = "tokyo-night"
 ```
 
@@ -192,7 +204,7 @@ To review against a different base — a `develop` trunk, say — set `base_bran
 config file (re-read on refresh, so editing it and pressing `r` re-bases without relaunch):
 
 ```toml
-# $HERDR_PLUGIN_CONFIG_DIR/config.toml
+# ~/.config/herdr/plugins/config/persiyanov.reviewr/config.toml
 base_branches = ["origin/develop", "origin/main", "main", "master"]
 ```
 
@@ -206,7 +218,7 @@ opens by setting `toggle_placement` in the same config file. reviewr re-reads th
 toggle, so a change takes effect the next time you press the key.
 
 ```toml
-# $HERDR_PLUGIN_CONFIG_DIR/config.toml
+# ~/.config/herdr/plugins/config/persiyanov.reviewr/config.toml
 toggle_placement = "overlay"   # split | overlay | zoomed | tab   (default: split)
 toggle_direction = "down"      # right | down — split only        (default: right)
 ```
@@ -220,7 +232,24 @@ toggle_direction = "down"      # right | down — split only        (default: ri
 
 When you create a new worktree, reviewr auto-opens only for `split` and `tab`. With `overlay` or
 `zoomed` it stays out of the way until you press the toggle yourself. Any value it does not
-recognize falls back to the default.
+recognize falls back to the default. You can also turn the auto-open off entirely — see below.
+
+### Auto-open and layout plugins
+
+reviewr auto-opens for every new worktree by default. To make it wait for the toggle key instead,
+set `auto_open = false` in the same config file:
+
+```toml
+# ~/.config/herdr/plugins/config/persiyanov.reviewr/config.toml
+auto_open = false   # default: true
+```
+
+Do this when another plugin arranges your new worktrees — for example
+[herdr-plus](https://github.com/cloudmanic/herdr-plus) worktree layouts. Both plugins react to the
+same worktree event and race each other, and either can lose: the layout may be skipped entirely,
+or reviewr may land as a split in the middle of it. With `auto_open = false` reviewr leaves fresh
+workspaces alone, the layout builds undisturbed, and the toggle key opens reviewr on top of it in
+whatever placement you configured.
 
 ## Limitations
 

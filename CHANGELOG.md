@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-07-08
+
+### Added
+- **`auto_open` config key** — `auto_open = false` in reviewr's `config.toml` turns off the
+  `worktree.created` auto-open, so a layout plugin like herdr-plus can furnish a fresh worktree
+  undisturbed and reviewr opens only on the toggle key, in any placement. Defaults to `true`
+  (today's behavior); an unknown value falls back to the default. See `specs/herdr-host.md`. (#5)
+
+### Changed
+- README now spells out where reviewr's config file lives on disk
+  (`~/.config/herdr/plugins/config/persiyanov.reviewr/config.toml`) instead of only naming
+  `$HERDR_PLUGIN_CONFIG_DIR`, which users cannot resolve from their shell. (#5)
+
 ## [0.7.1] — 2026-07-08
 
 ### Fixed

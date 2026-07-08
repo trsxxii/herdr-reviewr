@@ -10,7 +10,7 @@ How herdr-reviewr runs inside herdr, finds its repo, sends comments to the agent
 
 ## Overview
 
-herdr-reviewr ships as a herdr plugin (`herdr-plugin.toml`): a `sidebar` pane entrypoint that runs the binary, a `toggle` action bound to a key, and a `worktree.created` event that auto-opens it for a freshly created worktree. Opening and closing the pane is herdr's job; the binary just runs in it.
+herdr-reviewr ships as a herdr plugin (`herdr-plugin.toml`): a `sidebar` pane entrypoint that runs the binary, a `toggle` action bound to a key, and a `worktree.created` event that auto-opens it for a freshly created worktree (disabled by `auto_open = false`; see [Sidebar placement](#sidebar-placement)). Opening and closing the pane is herdr's job; the binary just runs in it.
 
 The toggle action opens the sidebar with a configurable placement, defaulting to a right split; see [Sidebar placement](#sidebar-placement).
 
@@ -20,18 +20,20 @@ The toggle script (`herdr/sidebar.sh`) opens the sidebar for the focused pane's 
 
 ### Sidebar placement
 
-The `toggle` action opens the sidebar with the placement and direction from reviewr's config file, defaulting to a right split. `sidebar.sh` reads the file on every invocation, so an edit takes effect on the next toggle.
+The `toggle` action opens the sidebar with the placement and direction from reviewr's config file, defaulting to a right split, and the `worktree.created` auto-open can be disabled outright with `auto_open`. `sidebar.sh` reads the file on every invocation, so an edit takes effect on the next toggle or event.
 
 ```toml
 # $HERDR_PLUGIN_CONFIG_DIR/config.toml
 toggle_placement = "overlay"   # split | overlay | zoomed | tab   (default: split)
 toggle_direction = "down"      # right | down — split only        (default: right)
+auto_open = false              # auto-open on worktree.created    (default: true)
 ```
 
 | key | values | default | meaning |
 | --- | --- | --- | --- |
 | `toggle_placement` | `split`, `overlay`, `zoomed`, `tab` | `split` | how the toggle opens the sidebar |
 | `toggle_direction` | `right`, `down` | `right` | split orientation; ignored by the other placements |
+| `auto_open` | `true`, `false` (TOML boolean, bare) | `true` | whether `worktree.created` opens the sidebar at all |
 
 Each placement maps to one `herdr plugin pane open` shape (`../docs/herdr-api-notes.md`):
 
@@ -52,12 +54,13 @@ herdr plugin pane open --plugin persiyanov.reviewr --entrypoint sidebar \
 | # | Always true | A consumer observes it as |
 | --- | --- | --- |
 | P1 | The toggle opens the placement named by `toggle_placement`, defaulting to `split`. | The configured placement appears on the key press. |
-| P2 | Each key defaults independently: an unknown or missing `toggle_placement` opens `split`, an unknown or missing `toggle_direction` opens `right`; neither errors. | A typo in one key still toggles, using that key's default. |
+| P2 | Each key defaults independently: an unknown or missing `toggle_placement` opens `split`, an unknown or missing `toggle_direction` opens `right`, an unknown or missing `auto_open` reads `true`; none errors. | A typo in one key still toggles, using that key's default. |
 | P3 | `toggle_direction` changes only `split` — `right` beside the pane, `down` below it. | With `tab`/`overlay`/`zoomed`, direction has no visible effect. |
 | P4 | The `worktree.created` event opens reviewr only for `split` and `tab`; `overlay`/`zoomed` open nothing. | A new worktree auto-shows the sidebar only in split and tab modes. |
 | P5 | reviewr never takes focus on the `worktree.created` event, in any placement. | A fresh worktree never moves the keyboard off the agent. |
 | P6 | A manual toggle keeps focus on the agent for `split`, and moves focus to reviewr for `tab`/`overlay`/`zoomed`. | The keyboard lands where that placement is usable. |
 | P7 | At most one reviewr pane exists per workspace; a second toggle closes it, whatever placement opened it. | Toggling never stacks two sidebars, even after the config changed between opens. |
+| P8 | With `auto_open = false`, the `worktree.created` event opens nothing in any placement and writes no state; the toggle is unaffected. | A new worktree stays untouched, and the toggle key still opens the configured placement. |
 
 **T1 — placement changed between open and close**
 
@@ -72,6 +75,14 @@ herdr plugin pane open --plugin persiyanov.reviewr --entrypoint sidebar \
 2. A worktree is created; the event fires with no focused pane.
 3. The script reads `zoomed`, not an auto-open placement → opens nothing and writes no state (→ P4).
 4. The user later toggles → a zoomed pane opens over the now-focused agent and takes focus (→ P6).
+
+**T3 — worktree.created beside a layout plugin**
+
+1. `auto_open = false`; another plugin (e.g. herdr-plus) also subscribes to `worktree.created` and lays tabs into the new workspace.
+2. A worktree is created; herdr runs both handlers in no guaranteed order.
+3. reviewr's handler reads `auto_open = false` → opens nothing and writes no state, whichever handler ran first (→ P8).
+4. The layout plugin finds the workspace with only its root pane and applies its layout undisturbed.
+5. The user later toggles → reviewr opens with the configured placement over the finished layout (→ P1, P6).
 
 ### Repo discovery
 
@@ -132,6 +143,8 @@ These are not built here; the architecture only stays open to them.
 - `overlay` and `zoomed` never auto-open — a covering pane over a just-created worktree hides the fresh agent, and `overlay` has no pane to attach to on the event (herdr binds it to the active pane, and the event has none). Rejected: auto-opening a fallback split for the covering modes — it collides with the single-pane toggle state and overrides the user's choice of full-screen-on-demand. Reversal: herdr gains a targetable, non-covering overlay.
 - Focus follows the placement's usability — `split` stays ambient (agent keeps the keyboard), the tab/overlay/zoomed placements take focus on a manual toggle, and the event never steals focus. Rejected: a blanket `--no-focus`, which leaves an overlay routing keystrokes to the pane it hides.
 - `toggle_direction` offers `right|down` only — mirrors herdr's `split` direction set; herdr does not split a pane left or up.
+- `auto_open` is an explicit opt-out, not a yield-to-populated-workspace heuristic — two plugins on one `worktree.created` event race (herdr guarantees no handler order, and herdr-plus skips its layout when the workspace already has a second pane, #5), and a delay-then-sniff-the-pane-count auto-open is just a second racer with a magic timeout. Rejected: sleeping in the event handler and skipping when the workspace has grown. Reversal: herdr gains event-handler ordering or a workspace-settled signal.
+- `auto_open` defaults to `true` — the ambient sidebar on a fresh worktree is the flagship flow, and layout-plugin users are the minority with a one-line opt-out. Rejected: defaulting to `false`, which silently turns off the headline feature for everyone else.
 
 ## Open decisions
 

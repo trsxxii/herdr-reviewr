@@ -64,22 +64,31 @@ fi
 # Only open inside a git repo.
 [ -n "$cwd" ] && git -C "$cwd" rev-parse --show-toplevel >/dev/null 2>&1 || exit 0
 
-# Placement/direction come from reviewr's config (default: right split); an unknown value falls
-# back to its default (specs/herdr-host.md#sidebar-placement). The file is re-read every run.
+# Placement/direction/auto-open come from reviewr's config (default: right split, auto-open on);
+# an unknown value falls back to its default (specs/herdr-host.md#sidebar-placement). The file is
+# re-read every run. auto_open is a TOML boolean, so it is matched bare (quotes tolerated).
 placement="split"
 direction="right"
+auto_open="true"
 conf="${HERDR_PLUGIN_CONFIG_DIR:-}/config.toml"
 if [ -n "${HERDR_PLUGIN_CONFIG_DIR:-}" ] && [ -f "$conf" ]; then
   p=$(sed -n "s/^[[:space:]]*toggle_placement[[:space:]]*=[[:space:]]*[\"']\([^\"']*\)[\"'].*/\1/p" "$conf" 2>/dev/null | tail -n1)
   d=$(sed -n "s/^[[:space:]]*toggle_direction[[:space:]]*=[[:space:]]*[\"']\([^\"']*\)[\"'].*/\1/p" "$conf" 2>/dev/null | tail -n1)
+  a=$(sed -n "s/^[[:space:]]*auto_open[[:space:]]*=[[:space:]]*[\"']*\([a-z]*\)[\"']*.*/\1/p" "$conf" 2>/dev/null | tail -n1)
   case "$p" in split | overlay | zoomed | tab) placement="$p" ;; esac
   case "$d" in right | down) direction="$d" ;; esac
+  case "$a" in true | false) auto_open="$a" ;; esac
 fi
 
-# The worktree.created event (mode=open) auto-opens only the non-covering placements: a covering
-# pane over a fresh worktree hides the agent, and overlay has no pane to attach to on an event.
-if [ "$mode" = "open" ] && [ "$placement" != "split" ] && [ "$placement" != "tab" ]; then
-  exit 0
+# The worktree.created event (mode=open) is a no-op with auto_open = false — the escape hatch for
+# layout plugins (e.g. herdr-plus) that furnish the same fresh workspace on the same event (#5).
+# Otherwise it auto-opens only the non-covering placements: a covering pane over a fresh worktree
+# hides the agent, and overlay has no pane to attach to on an event.
+if [ "$mode" = "open" ]; then
+  [ "$auto_open" = "false" ] && exit 0
+  if [ "$placement" != "split" ] && [ "$placement" != "tab" ]; then
+    exit 0
+  fi
 fi
 
 # Focus stays on the agent for an event or a split (ambient sidebar); a manual toggle into a
