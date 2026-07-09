@@ -55,6 +55,12 @@ command = "persiyanov.reviewr.toggle"   # <plugin_id>.<action_id> — note the i
 `cmd+…` chords reach herdr; macOS swallows `alt+…`. With no key bound, run it once with
 `herdr plugin action invoke toggle --plugin persiyanov.reviewr`.
 
+Beside `toggle` there are two explicit actions, made for scripts and layout plugins. `open` opens
+the sidebar and does nothing when one is already open. `close` closes it and does nothing when none
+is. Both are bindable and invokable the same way, as `persiyanov.reviewr.open` and
+`persiyanov.reviewr.close`. See [Auto-open and layout plugins](#auto-open-and-layout-plugins) for
+the layout recipe.
+
 ## Quick start
 
 The core loop takes five keys. Open the sidebar next to your agent and:
@@ -250,6 +256,19 @@ same worktree event and race each other, and either can lose: the layout may be 
 or reviewr may land as a split in the middle of it. With `auto_open = false` reviewr leaves fresh
 workspaces alone, the layout builds undisturbed, and the toggle key opens reviewr on top of it in
 whatever placement you configured.
+
+A layout can also open reviewr itself, deterministically, once its panes are in place:
+
+```
+herdr plugin action invoke open --plugin persiyanov.reviewr
+```
+
+`open` ignores `auto_open` — an explicit call is you asking. It opens with your configured
+placement and does nothing when a sidebar is already open, so a layout can run it on every pass.
+Two things to know. The action opens reviewr in the **focused** workspace, so invoke it while the
+new workspace has focus. And it opens reviewr as its **own new pane** — a layout pane whose command
+is the invoke will exit once the invoke returns, so run it as a one-shot command from your layout
+hook, not as a pane that should stay.
 
 ## Limitations
 

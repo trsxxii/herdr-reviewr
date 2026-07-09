@@ -6,6 +6,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-07-09
+
+### Added
+- **`open` and `close` actions for scripts and layout plugins.** `herdr plugin action invoke
+  open --plugin persiyanov.reviewr` opens the sidebar and does nothing when one is already
+  open. `close` removes it, including a sidebar herdr's plugin registry forgot after a restart.
+  `toggle` keeps its key. `open` ignores `auto_open`, so a layout that opts out of auto-open
+  can still place reviewr deliberately. See `specs/herdr-host.md` and the README's layout
+  recipe. (#9)
+
+### Changed
+- **The sidebar is found by its pane label, not a state file.** Toggle, open, and close now
+  look for the `reviewr` pane in the live pane list. A duplicate pane from a race is swept by
+  the next close, nothing goes stale across crashes or herdr restarts, and no state files are
+  written.
+- **Actions report their outcome.** A refused action (no workspace context, or opening outside
+  a git repo) exits non-zero with one line saying why. A success prints the pane it acted on.
+  Both land in `herdr plugin log list`.
+
 ## [0.9.0] — 2026-07-09
 
 ### Fixed
