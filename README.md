@@ -8,16 +8,17 @@ the terminal.
 
 What you get, in one persistent pane pointed at a git worktree:
 
-- **A diff to review** — the agent's changed files, syntax-highlighted, scoped to *uncommitted*,
+- **Diff review** — the agent's changed files, syntax-highlighted, scoped to *uncommitted*,
   *branch*, or *last turn*.
-- **Line comments that stay put** — select a range and write a note. It stays visible as a card
-  under the code instead of hiding behind a marker.
-- **One keystroke back to the agent** — **Send** drops every comment into the agent's input as
+- **Line comments** — select a range and write a note. It stays visible as a card under the code
+  instead of hiding behind a marker.
+- **Send** — one keystroke drops every comment into the agent's input as
   `path:start-end — comment`. You add context and hit enter.
-- **More when you need it** — browse the whole worktree, not just the diff, and read the branch's
-  open pull request without switching windows.
-- **Themed to match your terminal** — 18 named palettes in dark and light, one config line away.
-  Catppuccin, Dracula, Nord, Gruvbox, Tokyo Night, Rosé Pine, Solarized, and more.
+- **File viewer** — the whole worktree, not just the diff, with any file's current content
+  rendered in the pane.
+- **PR view** — the branch's open pull request, read-only, without switching windows.
+- **Themes** — 18 named palettes in dark and light, one config line away. Catppuccin, Dracula,
+  Nord, Gruvbox, Tokyo Night, Rosé Pine, Solarized, and more.
 
 It **never edits your worktree** and sends nothing on its own. Its only write to git is a private
 `last-turn` baseline ref under `refs/reviewr/`. The **PR** tab reads GitHub but never posts there.
