@@ -335,6 +335,33 @@ fn a_changed_word_gets_the_emphasis_background() {
     assert!(found, "a changed word carries the emphasis background");
 }
 
+/// Catppuccin surface1 — the cursor fill of the pane that does not hold focus.
+const UNFOCUSED_CURSOR_BG: ratatui::style::Color = ratatui::style::Color::Rgb(0x45, 0x47, 0x5a);
+
+#[test]
+fn the_diff_cursor_row_is_marked_from_either_pane() {
+    // The diff pane's cursor row fills like the file list's: brightest when the pane holds
+    // focus, a step softer when it does not. A hunk step driven from the file list moves this
+    // cursor, so it has to be visible from there.
+    let mut app = edited_app();
+    app.focus = Focus::Diff;
+    app.next_hunk();
+    let cursor_y = |app: &App| 2 + app.diff_cursor as u16; // border at y=1, first row at y=2
+    let fill = |app: &App, bg| {
+        let buf = render_buffer(app);
+        let y = cursor_y(app);
+        (1..40u16).filter(|&x| buf.cell((x, y)).is_some_and(|c| c.bg == bg)).count()
+    };
+
+    assert!(fill(&app, SELECTION_BG) > 10, "the focused diff fills its cursor row with surface2");
+
+    app.focus = Focus::Files;
+    assert!(
+        fill(&app, UNFOCUSED_CURSOR_BG) > 10,
+        "and still marks it, a step softer, while the file list holds focus"
+    );
+}
+
 #[test]
 fn the_selected_file_row_fills_with_the_shared_selection_color() {
     let app = edited_app(); // one file, file_cursor = 0, Files focused

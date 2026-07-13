@@ -57,6 +57,7 @@ A herdr name outside this set (`kanagawa`, `kanagawa-lotus`, `vesper`, `terminal
 - A theme lists its anchors. Derivation computes every other slot.
 - Each theme declares its `appearance`, light or dark. Dark themes lighten `base` for surfaces, light themes darken it.
 - The cursor, selection, and fold fills step `surface2` > `surface1` > `surface0`. The cursor is the strongest contrast, a fold the faintest.
+- Both panes always fill their cursor row. The focused pane fills with `surface2`, the other with `surface1`, so which pane holds focus reads at a glance.
 - `catppuccin` pins its whole palette as a literal and renders as faithful Catppuccin Mocha.
 
 ### Diff-fill legibility

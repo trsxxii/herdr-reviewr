@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.1] — 2026-07-13
+
+### Fixed
+- **The diff cursor is visible from the file list.** The diff pane hid its cursor row whenever the
+  file list held focus, so a hunk step driven from the list moved a cursor you could not see. Both
+  panes now always mark their cursor row, filling it brightly when the pane has focus and a step
+  softer when it does not — the file list already behaved this way.
+
 ## [0.16.0] — 2026-07-13
 
 ### Added

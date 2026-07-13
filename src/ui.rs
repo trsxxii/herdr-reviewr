@@ -819,8 +819,11 @@ fn render_diff_view(frame: &mut Frame, app: &App, area: Rect) {
     // card of a comment being edited is hidden — its edit box stands in for it.
     let row_lines = |i: usize| -> Vec<Line> {
         let state = RowState {
+            // The cursor row is always marked, dimmed while the pane is unfocused, exactly as
+            // the file list marks its own (`specs/tui.md`). A hunk step driven from the list
+            // moves this cursor, so hiding it would leave the jump with nothing to show.
             commented: commented.contains(&i),
-            cursor: app.focus == Focus::Diff && i == app.diff_cursor,
+            cursor: i == app.diff_cursor,
             selected: selecting && i >= lo && i <= hi,
         };
         let mut lines = render_row(&app.visible[i], layout, state);
