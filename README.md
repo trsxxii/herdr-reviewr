@@ -142,8 +142,8 @@ click (`http`/`https` only), and an anchor link (`#section`) jumps to its headin
 
 ## The three tabs
 
-- **Changes** — the changed files for the active scope, with `+/-` stats. Pick a file to read its
-  syntax-highlighted diff. This is where you review and comment. On a `.md` file, `m` opens a
+- **Changes** — the changed files for the active scope, with `+/-` stats per file and their
+  totals in the header. Pick a file to read its syntax-highlighted diff. This is where you review and comment. On a `.md` file, `m` opens a
   rendered preview of it. Press `m` again to return to the diff where you left off.
 - **All files** — the whole worktree tree, not only what changed. The diff pane renders any
   file's current content. Git-ignored paths show too, dimmed. A directory ignored as a whole

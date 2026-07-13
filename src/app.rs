@@ -2260,6 +2260,14 @@ impl App {
         self.changed.len()
     }
 
+    /// The scope's aggregate line stats, shown beside the header count (specs/tui.md).
+    /// Saturating, so a pathological changeset pins at the cap instead of wrapping.
+    pub fn changed_totals(&self) -> (u32, u32) {
+        self.changed.values().fold((0, 0), |(added, removed), a| {
+            (added.saturating_add(a.additions), removed.saturating_add(a.deletions))
+        })
+    }
+
     /// Whether a comment's anchor may have moved. A diff comment is stale once its file leaves
     /// the changeset; a File-view (content) comment only once its file is gone from the
     /// worktree, since it was never tied to the changeset (specs/review-model.md).

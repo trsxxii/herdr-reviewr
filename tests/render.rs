@@ -357,6 +357,31 @@ fn shows_tab_bar_file_list_and_diff() {
     assert!(out.contains("changed"), "the header shows the changed count");
 }
 
+#[test]
+fn the_header_totals_the_scope_and_hides_them_at_zero() {
+    let r = Repo::init();
+    r.write("edited.rs", "old\n");
+    r.commit_all("init");
+    r.write("edited.rs", "new\n");
+    r.write("untracked.rs", "one\ntwo\n");
+    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    app.reload().unwrap();
+
+    // 62 columns is the exact fit. The totals' `−` is multi-byte, so this breaks if the
+    // header measures bytes instead of display width.
+    let header = render_at(&app, 62).lines().next().unwrap().to_string();
+    assert!(header.contains("2 changed  +3 −1"), "count, then the totals:\n{header}");
+
+    let clean = Repo::init();
+    clean.write("clean.rs", "same\n");
+    clean.commit_all("init");
+    let mut app = App::new(clean.path_buf(), Scope::Uncommitted, None);
+    app.reload().unwrap();
+    let header = render_at(&app, 80).lines().next().unwrap().to_string();
+    assert!(header.contains("0 changed"), "the bare count remains:\n{header}");
+    assert!(!header.contains('+'), "an empty changeset shows no totals:\n{header}");
+}
+
 /// The last non-blank rendered row — the footer band.
 fn footer_line(out: &str) -> String {
     out.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or_default().to_string()

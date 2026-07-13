@@ -449,12 +449,16 @@ fn send_button(app: &App) -> String {
     format!("[ Send ({}) ]", app.store.len())
 }
 
-/// The header suffix: the active scope's changed-file count. Shared so the painter and the
-/// hit-test place the right-aligned `Send` button at the same column. The scope chip, suffix,
-/// and `Send` button are all-ASCII, so their byte `.len()` equals their display width; the tab
-/// labels carry the only rebindable (possibly wide) glyphs and are measured by width.
+/// The header suffix: the active scope's changed-file count and its aggregate line totals, in
+/// [`stats_str`]'s grammar, so a zero side drops and an empty changeset shows the bare count.
+/// Shared so the painter and the hit-test place the right-aligned `Send` button at the same
+/// column. The totals' `−` is multi-byte, so the suffix is measured by display width; the scope
+/// chip and `Send` button are all-ASCII, so their byte `.len()` equals their display width.
 fn header_suffix(app: &App) -> String {
-    format!("  {} changed", app.changed_count())
+    let (added, removed) = app.changed_totals();
+    let stats = stats_str(added, removed);
+    let gap = if stats.is_empty() { "" } else { "  " };
+    format!("  {} changed{gap}{stats}", app.changed_count())
 }
 
 /// The column the `Send` button paints at, matching `render_tab_bar`'s layout: right-aligned
@@ -462,7 +466,7 @@ fn header_suffix(app: &App) -> String {
 /// collapses to 0). `hit_header` must use this, not a bare right-alignment, or a `Send` click
 /// mis-fires (and on a narrow sidebar lands in a tab span) when the header overflows.
 fn send_button_col(app: &App, prefix: usize, width: usize) -> usize {
-    let before = prefix + scope_chip(app).len() + header_suffix(app).len();
+    let before = prefix + scope_chip(app).len() + header_suffix(app).width();
     before + width.saturating_sub(before + send_button(app).len())
 }
 
@@ -493,7 +497,7 @@ fn render_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
     let suffix = header_suffix(app);
     let button = send_button(app);
     let prefix = header_prefix_len(&tab_spans(app.keymap()));
-    let used = prefix + chip.len() + suffix.len() + button.len();
+    let used = prefix + chip.len() + suffix.width() + button.len();
     let pad = (area.width as usize).saturating_sub(used);
 
     // A quiet surface bar: the active tab in bright lavender, the inactive one dimmed, the
@@ -502,7 +506,15 @@ fn render_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
     let bar = Style::default().bg(p.surface0);
     let mut spans = tab_bar_spans(app);
     spans.push(Span::styled(chip, bar.fg(p.yellow).add_modifier(Modifier::BOLD)));
-    spans.push(Span::styled(suffix, bar.fg(p.overlay0)));
+    // The suffix repaints in parts so the totals get the file rows' green/red; the parts spell
+    // out `header_suffix`, which the `Send` column math measures.
+    let (added, removed) = app.changed_totals();
+    spans.push(Span::styled(format!("  {} changed", app.changed_count()), bar.fg(p.overlay0)));
+    let stats = stats_spans(added, removed, p);
+    if !stats.is_empty() {
+        spans.push(Span::styled("  ", bar));
+        spans.extend(stats.into_iter().map(|s| Span::styled(s.content, s.style.bg(p.surface0))));
+    }
 
     let send_fg = if app.store.is_empty() { p.overlay0 } else { p.green };
     spans.push(Span::styled(" ".repeat(pad), bar));
