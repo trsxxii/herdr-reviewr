@@ -272,50 +272,16 @@ fn row_with_caret(text: &str, col: usize, p: &Palette) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Wrap one logical line's `chars` to `width` display columns, returning contiguous half-open
-/// char ranges (every char is in exactly one row, so a char index maps cleanly to a row). A
-/// greedy word wrap that keeps the break space on its row; an over-wide word hard-breaks.
-fn box_wrap(chars: &[char], width: usize) -> Vec<(usize, usize)> {
-    if chars.is_empty() {
-        return vec![(0, 0)];
-    }
-    let w = width.max(1);
-    let mut rows = Vec::new();
-    let mut start = 0;
-    while start < chars.len() {
-        let (mut col, mut i, mut last_space) = (0usize, start, None);
-        while i < chars.len() {
-            let cw = UnicodeWidthChar::width(chars[i]).unwrap_or(0);
-            if col + cw > w && i > start {
-                break;
-            }
-            col += cw;
-            if chars[i] == ' ' {
-                last_space = Some(i);
-            }
-            i += 1;
-        }
-        // Break after the last space that fits (keeping it on this row), else hard-break.
-        let end = if i < chars.len() {
-            last_space.filter(|&s| s + 1 > start).map_or(i, |s| s + 1)
-        } else {
-            i
-        };
-        rows.push((start, end));
-        start = end;
-    }
-    rows
-}
-
 /// The box's visual rows over the whole `input`: `(start_char_index, text)` per row, wrapping
-/// each logical line (split on `\n`) with [`box_wrap`]. A trailing newline yields an empty row.
+/// each logical line with [`wrap_segments`]. A trailing newline yields an empty row.
 fn box_rows(input: &str, width: usize) -> Vec<(usize, String)> {
     let chars: Vec<char> = input.chars().collect();
     let mut rows = Vec::new();
     let mut i = 0;
     loop {
         let line_end = chars[i..].iter().position(|&c| c == '\n').map_or(chars.len(), |p| i + p);
-        for (a, b) in box_wrap(&chars[i..line_end], width) {
+        let cells: Vec<Cell> = chars[i..line_end].iter().copied().map(plain_cell).collect();
+        for (a, b) in wrap_segments(&cells, width, ContinuationSpaces::Keep) {
             rows.push((i + a, chars[i + a..i + b].iter().collect::<String>()));
         }
         match chars[line_end..].first() {
@@ -357,16 +323,8 @@ pub fn caret_vertical(input: &str, caret: usize, content_w: usize, down: bool) -
 /// Word-wrap a plain string to `width` columns, reusing the diff's [`wrap_segments`] so the
 /// break rule (last space, hard-break an over-wide word, width-aware) is identical.
 fn wrap_text(s: &str, width: usize) -> Vec<String> {
-    let cells: Vec<Cell> = s
-        .chars()
-        .map(|ch| Cell {
-            ch,
-            w: UnicodeWidthChar::width(ch).unwrap_or(0),
-            fg: Color::Reset,
-            emph: false,
-        })
-        .collect();
-    wrap_segments(&cells, width)
+    let cells: Vec<Cell> = s.chars().map(plain_cell).collect();
+    wrap_segments(&cells, width, ContinuationSpaces::Trim)
         .into_iter()
         .map(|(a, b)| cells[a..b].iter().map(|c| c.ch).collect())
         .collect()
@@ -906,7 +864,7 @@ fn row_height(row: &Row, gutter_w: usize, width: usize, wrap: bool) -> usize {
         return 1;
     }
     let code_width = width.saturating_sub(gutter_prefix_width(gutter_w)).max(1);
-    wrap_segments(&code_cells(row, false), code_width).len()
+    wrap_segments(&code_cells(row, false), code_width, ContinuationSpaces::Trim).len()
 }
 
 /// The diff-pane layout: constant for a frame.
@@ -986,7 +944,10 @@ fn render_row(row: &Row, layout: RowLayout<'_>, state: RowState) -> Vec<Line<'st
     // Without wrap the line is one chunk scrolled by `h_scroll`; with wrap, word-wrapped
     // segments, the first numbered and the rest blank-gutter.
     let chunks: Vec<&[Cell]> = if wrap {
-        wrap_segments(&cells, code_width).into_iter().map(|(s, e)| &cells[s..e]).collect()
+        wrap_segments(&cells, code_width, ContinuationSpaces::Trim)
+            .into_iter()
+            .map(|(s, e)| &cells[s..e])
+            .collect()
     } else {
         vec![cells.get(skip_columns(&cells, h_scroll)..).unwrap_or(&[])]
     };
@@ -1028,14 +989,28 @@ pub(crate) fn rgb(c: crate::diff::Rgb) -> Color {
 /// Tabs expand to this many columns.
 const TAB: usize = 4;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ContinuationSpaces {
+    Keep,
+    Trim,
+}
+
+fn plain_cell(ch: char) -> Cell {
+    Cell { ch, w: UnicodeWidthChar::width(ch).unwrap_or(0), fg: Color::Reset, emph: false }
+}
+
 /// Greedy word wrap over display cells into half-open ranges, one per display row.
 ///
 /// Breaks at the last space that fits within `width`, falling back to a hard break when a
-/// single word is wider than the column. Leading spaces on a continuation are dropped so a
-/// break landing just before a space doesn't leave an almost-empty row. An empty line still
-/// yields one (empty) range so it occupies a row. The renderer and [`row_height`] share this
+/// single word is wider than the column. [`ContinuationSpaces::Trim`] drops leading spaces
+/// from continuation rows; [`ContinuationSpaces::Keep`] preserves every character for caret
+/// mapping. An empty line still yields one range. The renderer and [`row_height`] share this
 /// so what's measured matches what's painted.
-fn wrap_segments(cells: &[Cell], width: usize) -> Vec<(usize, usize)> {
+fn wrap_segments(
+    cells: &[Cell],
+    width: usize,
+    continuation_spaces: ContinuationSpaces,
+) -> Vec<(usize, usize)> {
     if cells.is_empty() {
         return vec![(0, 0)];
     }
@@ -1063,8 +1038,10 @@ fn wrap_segments(cells: &[Cell], width: usize) -> Vec<(usize, usize)> {
         let end = brk.filter(|&e| e > start).unwrap_or(limit);
         segs.push((start, end));
         start = end;
-        while start < cells.len() && cells[start].ch == ' ' {
-            start += 1;
+        if continuation_spaces == ContinuationSpaces::Trim {
+            while start < cells.len() && cells[start].ch == ' ' {
+                start += 1;
+            }
         }
     }
     segs
@@ -1511,51 +1488,70 @@ fn render_pr_nav(frame: &mut Frame, app: &App, area: Rect) {
     let block = bordered("Checks & comments", true, p);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let Some(s) = app.pr_snapshot() else {
-        // The empty/degraded message lives once, in the read pane; this navigator stays blank.
-        return;
-    };
     let width = inner.width as usize;
-    let dim = Style::default().fg(p.overlay0);
-    let now = std::time::SystemTime::now();
-
-    // (row spans, is the navigator cursor on this row). The description row and the
-    // comment rows are the cursor stops; the checks section is a status display.
-    let mut rows: Vec<(Vec<Span<'static>>, bool)> = Vec::new();
-    // A non-empty PR description pins a `description` row at the top of the navigator,
-    // above the checks — the PR itself, before its status and discussion (specs/tui.md).
-    let offset = app.pr_description_offset();
-    if app.pr_has_description() {
-        rows.push((vec![Span::styled("description", text_style(p))], app.pr_cursor == 0));
-        rows.push((Vec::new(), false));
-    }
-    rows.push((vec![Span::styled(pr_checks_header(s), dim)], false));
-    for c in &s.checks {
-        let (glyph, color) = check_glyph(p, c.status);
-        rows.push((
-            vec![
-                Span::styled(format!(" {glyph} "), Style::default().fg(color)),
-                Span::styled(c.name.clone(), text_style(p)),
-            ],
-            false,
-        ));
-    }
-    rows.push((Vec::new(), false));
-    rows.push((vec![Span::styled(format!("comments · {}", s.comments.len()), dim)], false));
-    for (j, cm) in s.comments.iter().enumerate() {
-        rows.push((pr_comment_row(cm, width, now, p), app.pr_cursor == j + offset));
-    }
-
+    let rows = pr_nav_rows(app, width, std::time::SystemTime::now());
     let viewport = inner.height as usize;
-    let selected = rows.iter().position(|(_, sel)| *sel).unwrap_or(0);
-    let scroll = selected.saturating_sub(viewport.saturating_sub(1));
+    let scroll = pr_nav_scroll(&rows, app.pr_cursor, viewport);
     let items: Vec<ListItem> = rows
         .into_iter()
         .skip(scroll)
         .take(viewport)
-        .map(|(spans, sel)| selectable_row(spans, width, sel.then(|| p.cursor_bg(true))))
+        .map(|row| {
+            let selected = row.cursor == Some(app.pr_cursor);
+            selectable_row(row.spans, width, selected.then(|| p.cursor_bg(true)))
+        })
         .collect();
     frame.render_widget(List::new(items), inner);
+}
+
+/// One painted PR navigator row and the cursor index it selects, when interactive.
+struct PrNavRow {
+    spans: Vec<Span<'static>>,
+    cursor: Option<usize>,
+}
+
+/// The complete PR navigator layout, shared by painting and click hit-testing.
+fn pr_nav_rows(app: &App, width: usize, now: std::time::SystemTime) -> Vec<PrNavRow> {
+    let Some(s) = app.pr_snapshot() else { return Vec::new() };
+    let p = app.palette();
+    let dim = Style::default().fg(p.overlay0);
+    let mut rows = Vec::new();
+    if app.pr_has_description() {
+        rows.push(PrNavRow {
+            spans: vec![Span::styled("description", text_style(p))],
+            cursor: Some(0),
+        });
+        rows.push(PrNavRow { spans: Vec::new(), cursor: None });
+    }
+    rows.push(PrNavRow { spans: vec![Span::styled(pr_checks_header(s), dim)], cursor: None });
+    for check in &s.checks {
+        let (glyph, color) = check_glyph(p, check.status);
+        rows.push(PrNavRow {
+            spans: vec![
+                Span::styled(format!(" {glyph} "), Style::default().fg(color)),
+                Span::styled(check.name.clone(), text_style(p)),
+            ],
+            cursor: None,
+        });
+    }
+    rows.push(PrNavRow { spans: Vec::new(), cursor: None });
+    rows.push(PrNavRow {
+        spans: vec![Span::styled(format!("comments · {}", s.comments.len()), dim)],
+        cursor: None,
+    });
+    let offset = app.pr_description_offset();
+    rows.extend(s.comments.iter().enumerate().map(|(index, comment)| PrNavRow {
+        spans: pr_comment_row(comment, width, now, p),
+        cursor: Some(index + offset),
+    }));
+    rows
+}
+
+fn pr_nav_scroll(rows: &[PrNavRow], cursor: usize, viewport: usize) -> usize {
+    rows.iter()
+        .position(|row| row.cursor == Some(cursor))
+        .unwrap_or(0)
+        .saturating_sub(viewport.saturating_sub(1))
 }
 
 /// The `checks` section header with its rollup (`✗ 1 failing` / `✓ N passed` / `running`).
@@ -1811,29 +1807,10 @@ pub fn pr_nav_hit(area: Rect, app: &App, col: u16, row: u16) -> Option<usize> {
     if !contains(inner, col, row) {
         return None;
     }
-    let s = app.pr_snapshot()?;
-    let has_desc = app.pr_has_description();
-    let offset = app.pr_description_offset();
-    let first = pr_nav_first_comment_row(s, has_desc);
-    // The display row of the selected cursor row; the view windows on it exactly as the
-    // painter does.
-    let sel_display =
-        if has_desc && app.pr_cursor == 0 { 0 } else { first + app.pr_cursor - offset };
+    let rows = pr_nav_rows(app, inner.width as usize, std::time::SystemTime::now());
     let viewport = inner.height as usize;
-    let scroll = sel_display.saturating_sub(viewport.saturating_sub(1));
-    let d = (row - inner.y) as usize + scroll;
-    if has_desc && d == 0 {
-        return Some(0);
-    }
-    (d >= first && d - first < s.comments.len()).then(|| d - first + offset)
-}
-
-/// The display row of the first comment in `render_pr_nav`'s navigator — past the pinned
-/// description (when present), the checks header, the checks, a blank, and the comments
-/// header. The single home for that layout offset, shared with the click hit-test so the
-/// painted rows and the hit math can't drift.
-fn pr_nav_first_comment_row(s: &forge::PrSnapshot, has_desc: bool) -> usize {
-    usize::from(has_desc) * 2 + s.checks.len() + 3
+    let scroll = pr_nav_scroll(&rows, app.pr_cursor, viewport);
+    rows.get((row - inner.y) as usize + scroll)?.cursor
 }
 
 /// The status glyph and Catppuccin accent for a check.

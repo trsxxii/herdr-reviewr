@@ -209,12 +209,11 @@ fn git_strict(repo: &Path, args: &[&str]) -> Result<String, GitFail> {
 }
 
 /// Everything the PR fetch reads from local Git in one failure-aware pass. [`OriginIdentity`]
-/// preserves repository, missing, hostless, unsupported, and malformed origin states; optional
-/// branch/HEAD fields preserve detached and unborn states.
-#[derive(Debug)]
-pub struct PrLocal {
+/// preserves repository, missing, hostless, unsupported, and malformed origin states; the
+/// optional `HEAD` and candidate list preserve detached and unborn states.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrFetchInput {
     pub origin: OriginIdentity,
-    pub branch: Option<String>,
     /// `HEAD` pinned to an OID at the start of the pass; every ancestry test, distance,
     /// and the `sync` count use this pin, so one fetch reads one consistent local state.
     pub head_oid: Option<String>,
@@ -223,18 +222,18 @@ pub struct PrLocal {
     pub candidates: Vec<String>,
 }
 
-/// Derive the PR fetch's local state: the origin identity, branch, pinned `HEAD`,
-/// and the candidate branches the work could be published under (`specs/forge-host.md`).
+/// Derive the PR fetch's local state: the origin identity, pinned `HEAD`, and the candidate
+/// branches the work could be published under (`specs/forge-host.md`).
 pub fn pr_local(
     repo: &Path,
     base_flag: Option<&str>,
     config_bases: &[String],
     github_host: Option<&str>,
-) -> Result<PrLocal, GitFail> {
+) -> Result<PrFetchInput, GitFail> {
     let origin = origin_identity(repo, github_host)?;
     let Some(branch) = git_tristate(repo, &["symbolic-ref", "--quiet", "--short", "HEAD"])? else {
         // Detached HEAD — post-merge cleanup, not a review seat; nothing to publish.
-        return Ok(PrLocal { origin, branch: None, head_oid: None, candidates: Vec::new() });
+        return Ok(PrFetchInput { origin, head_oid: None, candidates: Vec::new() });
     };
     let head_oid = git_tristate(repo, &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])?;
     let bases = base_names(base_flag, config_bases);
@@ -247,7 +246,7 @@ pub fn pr_local(
         None => Vec::new(), // an unborn branch has no commits to compare against
     };
     let candidates = candidate_order(push_dest.as_deref(), &tips, &branch);
-    Ok(PrLocal { origin, branch: Some(branch), head_oid, candidates })
+    Ok(PrFetchInput { origin, head_oid, candidates })
 }
 
 /// Classify origin's primary rewritten fetch URL. A missing origin is a clean state; every other

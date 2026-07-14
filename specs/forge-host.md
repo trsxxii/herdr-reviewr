@@ -75,7 +75,7 @@ The alias rows apply only to scp-style and `ssh://` origins. An alias is a trust
 
 Hosted URL forms use `http://`, `https://`, or `git://`. File URLs and other schemes are not GitHub repository identities and remain unsupported.
 
-A fetch target is the canonical matched host plus the origin's owner and repository. A fetch input adds the pinned local branch, `HEAD`, candidate branches, and base configuration. `GH_HOST` cannot redirect a fetch to another instance.
+A fetch target is the canonical matched host plus the origin's owner and repository. A fetch input adds the pinned `HEAD` and derived candidate branches. Base configuration shapes those candidates but is not a second identity of its own. `GH_HOST` cannot redirect a fetch to another instance.
 
 ### Resolution
 
@@ -135,7 +135,7 @@ What a user observes:
 - A fetch with an open PR is two GraphQL calls. A fetch that checks historical PRs is three. All run on a worker thread, so `gh` never blocks input or scrolling.
 - One fetch is in flight at a time. A trigger arriving mid-flight supersedes its result and starts a fresh fetch when it completes.
 - Each fetch uses one snapshot of reviewr's config for host and base selection. A later fetch sees a config edit without restarting reviewr.
-- A completed fetch updates the PR tab only when the current worktree and config still derive the same input.
+- A completed fetch updates the PR tab only when the current worktree still derives the same target, pinned `HEAD`, and candidates. Config changes separately invalidate in-flight work before re-derivation.
 - The snapshot re-derives in full each fetch. reviewr keeps no hidden or historical PR cache beyond the visible snapshot.
 
 ## Failure semantics

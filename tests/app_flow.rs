@@ -6,11 +6,12 @@ mod common;
 use std::cell::RefCell;
 
 use anyhow::{Result, bail};
-use common::Repo;
+use common::{Repo, app_on, typed};
 use herdr_reviewr::app::{App, Focus, FooterAction, Mode, Tier};
 use herdr_reviewr::export::ExportTarget;
 use herdr_reviewr::keymap::{Action, Keymap};
 use herdr_reviewr::model::{Scope, Side};
+use herdr_reviewr::turn::Status;
 use herdr_reviewr::{handle_key, handle_mouse};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
@@ -50,12 +51,6 @@ fn edited_repo() -> Repo {
     r.commit_all("init");
     r.write("a.rs", "alpha\nBETA\ngamma\ndelta\nepsilon\n");
     r
-}
-
-fn app_on(r: &Repo) -> App {
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
-    app.reload().unwrap();
-    app
 }
 
 /// Settle the diff scroll with one display row per logical row (no wrap), for tests that
@@ -680,12 +675,6 @@ fn composing_app() -> App {
     app
 }
 
-fn typed(app: &mut App, text: &str) {
-    for ch in text.chars() {
-        app.input_push(ch);
-    }
-}
-
 #[test]
 fn the_editor_inserts_and_deletes_at_the_caret() {
     let mut app = composing_app();
@@ -1132,8 +1121,7 @@ fn the_composer_reserve_keeps_the_anchored_line_visible() {
     r.commit_all("init");
     r.write("big.rs", &original.replace("line", "LINE"));
 
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
-    app.reload().unwrap();
+    let mut app = app_on(&r);
     app.focus = Focus::Diff;
     app.diff_cursor = 30;
     app.start_comment();
@@ -1357,8 +1345,7 @@ fn editing_from_the_list_navigates_to_the_comments_file() {
     r.commit_all("init");
     r.write("a.rs", "alpha\nBETA\n");
     r.write("b.rs", "one\nTWO\n");
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
-    app.reload().unwrap();
+    let mut app = app_on(&r);
 
     // Comment on b.rs, then move the view to a.rs.
     let bi = app.entries.iter().position(|f| f.path == "b.rs").unwrap();
@@ -1555,8 +1542,7 @@ fn the_diff_scroll_is_sticky_and_only_follows_the_cursor_off_screen() {
     let edited = original.replace("line", "LINE");
     r.write("big.rs", &edited);
 
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
-    app.reload().unwrap();
+    let mut app = app_on(&r);
     app.focus = Focus::Diff;
     let height = 10;
 
@@ -1597,8 +1583,7 @@ fn a_refresh_keeps_the_diff_scroll_position() {
     r.commit_all("init");
     r.write("big.rs", &original.replace("line", "LINE"));
 
-    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
-    app.reload().unwrap();
+    let mut app = app_on(&r);
     app.focus = Focus::Diff;
     app.diff_cursor = 25;
     clamp(&mut app, 10);
@@ -1712,10 +1697,10 @@ fn last_turn_shows_a_change_producing_turn() {
     r.write("a.rs", "one\n");
     r.commit_all("init");
     let mut app = App::new(r.path_buf(), Scope::LastTurn, None);
-    app.apply_agent_status(Some("idle"));
-    app.apply_agent_status(Some("working")); // turn start: candidate = "one"
+    app.apply_agent_status(Some(Status::Idle));
+    app.apply_agent_status(Some(Status::Working)); // turn start: candidate = "one"
     r.write("a.rs", "one\ntwo\n");
-    app.apply_agent_status(Some("working")); // first change promotes the baseline
+    app.apply_agent_status(Some(Status::Working)); // first change promotes the baseline
     app.reload().unwrap();
     assert!(!app.awaiting_turn(), "the baseline is now set");
     assert!(app.entries.iter().any(|f| f.path == "a.rs"), "the turn's edit shows");
@@ -1728,14 +1713,14 @@ fn a_question_only_turn_keeps_the_previous_turns_diff() {
     r.commit_all("init");
     let mut app = App::new(r.path_buf(), Scope::LastTurn, None);
     // Turn A edits a file.
-    app.apply_agent_status(Some("idle"));
-    app.apply_agent_status(Some("working"));
+    app.apply_agent_status(Some(Status::Idle));
+    app.apply_agent_status(Some(Status::Working));
     r.write("a.rs", "one\ntwo\n");
-    app.apply_agent_status(Some("working"));
+    app.apply_agent_status(Some(Status::Working));
     // Turn B is a question — no file change.
-    app.apply_agent_status(Some("idle"));
-    app.apply_agent_status(Some("working"));
-    app.apply_agent_status(Some("idle"));
+    app.apply_agent_status(Some(Status::Idle));
+    app.apply_agent_status(Some(Status::Working));
+    app.apply_agent_status(Some(Status::Idle));
     app.reload().unwrap();
     assert!(
         app.entries.iter().any(|f| f.path == "a.rs"),
@@ -1749,13 +1734,13 @@ fn a_permission_pause_stays_one_turn() {
     r.write("a.rs", "one\n");
     r.commit_all("init");
     let mut app = App::new(r.path_buf(), Scope::LastTurn, None);
-    app.apply_agent_status(Some("idle"));
-    app.apply_agent_status(Some("working")); // turn start: candidate = "one"
+    app.apply_agent_status(Some(Status::Idle));
+    app.apply_agent_status(Some(Status::Working)); // turn start: candidate = "one"
     r.write("a.rs", "one\nbefore\n"); // edit before the prompt
-    app.apply_agent_status(Some("blocked")); // permission prompt promotes baseline = "one"
-    app.apply_agent_status(Some("working")); // resume — must NOT re-baseline
+    app.apply_agent_status(Some(Status::Blocked)); // permission prompt promotes baseline = "one"
+    app.apply_agent_status(Some(Status::Working)); // resume — must NOT re-baseline
     r.write("a.rs", "one\nbefore\nafter\n"); // edit after the prompt
-    app.apply_agent_status(Some("working"));
+    app.apply_agent_status(Some(Status::Working));
     app.reload().unwrap();
     let a = app.entries.iter().find(|f| f.path == "a.rs").expect("a.rs changed");
     let annotation = a.annotation.as_ref().expect("a changed file is annotated");
@@ -1769,10 +1754,10 @@ fn the_baseline_survives_a_restart() {
     r.commit_all("init");
     {
         let mut app = App::new(r.path_buf(), Scope::LastTurn, None);
-        app.apply_agent_status(Some("idle"));
-        app.apply_agent_status(Some("working"));
+        app.apply_agent_status(Some(Status::Idle));
+        app.apply_agent_status(Some(Status::Working));
         r.write("a.rs", "one\ntwo\n");
-        app.apply_agent_status(Some("working")); // promotes and persists the ref
+        app.apply_agent_status(Some(Status::Working)); // promotes and persists the ref
     }
     // A fresh App — a sidebar restart — resumes the persisted baseline.
     let mut restarted = App::new(r.path_buf(), Scope::LastTurn, None);

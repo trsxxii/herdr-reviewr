@@ -1102,11 +1102,8 @@ mod refresh_tests {
     fn input(head: &str) -> PrFetchInput {
         PrFetchInput {
             origin: OriginIdentity::Missing,
-            branch: Some("feature".to_string()),
             head_oid: Some(head.to_string()),
             candidates: vec!["feature".to_string()],
-            base: None,
-            base_branches: vec!["main".to_string()],
         }
     }
 

@@ -275,16 +275,8 @@ impl From<GhError> for PrView {
     }
 }
 
-/// Every local and configuration value that identifies one PR fetch.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PrFetchInput {
-    pub origin: crate::git::OriginIdentity,
-    pub branch: Option<String>,
-    pub head_oid: Option<String>,
-    pub candidates: Vec<String>,
-    pub base: Option<String>,
-    pub base_branches: Vec<String>,
-}
+/// The derived local state that determines one PR fetch.
+pub use crate::git::PrFetchInput;
 
 /// Derive one complete fetch input without contacting GitHub.
 pub fn fetch_input(
@@ -292,16 +284,8 @@ pub fn fetch_input(
     base: Option<&str>,
     config: &crate::config::PluginConfig,
 ) -> Result<PrFetchInput, String> {
-    let local = crate::git::pr_local(repo, base, config.base_branches(), config.github_host())
-        .map_err(|error| error.0)?;
-    Ok(PrFetchInput {
-        origin: local.origin,
-        branch: local.branch,
-        head_oid: local.head_oid,
-        candidates: local.candidates,
-        base: base.map(str::to_owned),
-        base_branches: config.base_branches().to_vec(),
-    })
+    crate::git::pr_local(repo, base, config.base_branches(), config.github_host())
+        .map_err(|error| error.0)
 }
 
 /// Read GitHub for one already-derived input. Degradation stays in-band for the PR tab.

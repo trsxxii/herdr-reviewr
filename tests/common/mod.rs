@@ -8,6 +8,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use herdr_reviewr::app::App;
+use herdr_reviewr::model::Scope;
 use tempfile::TempDir;
 
 pub struct Repo {
@@ -19,8 +21,6 @@ impl Repo {
     pub fn init() -> Self {
         let repo = Self { dir: TempDir::new().expect("tempdir") };
         repo.git(&["init", "-q", "-b", "main"]);
-        repo.git(&["config", "user.email", "test@herdr.test"]);
-        repo.git(&["config", "user.name", "Test"]);
         repo
     }
 
@@ -34,7 +34,16 @@ impl Repo {
 
     /// Run `git -C <repo> <args>`, asserting success, returning stdout.
     pub fn git(&self, args: &[&str]) -> String {
-        let out = Command::new("git").arg("-C").arg(self.path()).args(args).output().expect("git");
+        let out = Command::new("git")
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@herdr.test")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@herdr.test")
+            .arg("-C")
+            .arg(self.path())
+            .args(args)
+            .output()
+            .expect("git");
         assert!(
             out.status.success(),
             "git {args:?} failed: {}",
@@ -59,6 +68,18 @@ impl Repo {
     pub fn commit_all(&self, message: &str) {
         self.git(&["add", "-A"]);
         self.git(&["commit", "-q", "-m", message]);
+    }
+}
+
+pub fn app_on(repo: &Repo) -> App {
+    let mut app = App::new(repo.path_buf(), Scope::Uncommitted, None);
+    app.reload().unwrap();
+    app
+}
+
+pub fn typed(app: &mut App, text: &str) {
+    for ch in text.chars() {
+        app.input_push(ch);
     }
 }
 

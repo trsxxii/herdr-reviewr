@@ -566,6 +566,7 @@ dependencies = [
  "anyhow",
  "pulldown-cmark",
  "ratatui",
+ "serde",
  "serde_json",
  "similar",
  "syntect",

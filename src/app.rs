@@ -907,7 +907,7 @@ impl App {
             return false;
         }
         let status = crate::herdr::resolved_agent_status().ok().flatten();
-        self.apply_agent_status(status.as_deref())
+        self.apply_agent_status(status)
     }
 
     /// Advance the baseline from one status sample — the core [`track_turn`](Self::track_turn)
@@ -916,15 +916,13 @@ impl App {
     /// promotes once the worktree diverges from it, persisting the new baseline. Git errors
     /// only log, so a transient git failure never crashes the poll. Returns whether this
     /// sample ended a turn (a `working`→resting edge), the `PR` tab's refetch signal.
-    pub fn apply_agent_status(&mut self, status: Option<&str>) -> bool {
+    pub fn apply_agent_status(&mut self, status: Option<Status>) -> bool {
         if self.plugin_config().is_none() {
             return false;
         }
         let Some(status) = status else { return false };
-        let parsed = Status::parse(status);
-        // Read the turn-end edge before `observe` advances `prev`.
-        let ended = self.turn.ends_turn(parsed);
-        if self.turn.observe(parsed) {
+        let transition = self.turn.observe(status);
+        if transition.started {
             match git::snapshot_worktree(&self.repo) {
                 Ok(sha) => self.turn.set_candidate(sha),
                 Err(e) => logln!("turn snapshot failed: {e}"),
@@ -932,7 +930,9 @@ impl App {
         }
         // Promote the pending candidate once the turn has changed a file. Compare full
         // snapshots so a new untracked file counts as a change (specs/herdr-host.md).
-        let Some(candidate) = self.turn.candidate().map(str::to_string) else { return ended };
+        let Some(candidate) = self.turn.candidate().map(str::to_string) else {
+            return transition.ended;
+        };
         match git::snapshot_worktree(&self.repo) {
             Ok(now) if now != candidate => {
                 self.turn.promote();
@@ -943,7 +943,7 @@ impl App {
             Ok(_) => {}
             Err(e) => logln!("turn divergence check failed: {e}"),
         }
-        ended
+        transition.ended
     }
 
     /// Snap the diff view back to the top, clearing any pending selection.
@@ -2137,8 +2137,7 @@ impl App {
     /// The `(side, start, end, snippet)` the current selection anchors to.
     fn selection_anchor(&self) -> Option<(Side, u32, u32, String)> {
         let (lo, hi) = self.selection_range();
-        let selected: Vec<&Row> = self.visible.get(lo..=hi)?.iter().collect();
-        anchor(&selected)
+        anchor(self.visible.get(lo..=hi)?)
     }
 
     fn build_comment(&self, text: String) -> Option<Comment> {
@@ -2611,21 +2610,25 @@ fn line_in(c: &Comment, row: &Row) -> bool {
 ///
 /// New-side numbers win when present (insertion/context rows); a pure deletion
 /// anchors to the old side. The snippet keeps each row's `+`/`−`/space marker.
-fn anchor(selected: &[&Row]) -> Option<(Side, u32, u32, String)> {
-    // A selection may straddle a collapsed fold; anchor only over its content rows.
-    let selected: Vec<&Row> = selected.iter().copied().filter(|r| r.is_content()).collect();
-    if selected.is_empty() {
-        return None;
+fn anchor(selected: &[Row]) -> Option<(Side, u32, u32, String)> {
+    let mut new: Option<(u32, u32)> = None;
+    let mut old: Option<(u32, u32)> = None;
+    let mut snippet = String::new();
+    for row in selected.iter().filter(|row| row.is_content()) {
+        if !snippet.is_empty() {
+            snippet.push('\n');
+        }
+        snippet.push_str(&row.marker_text());
+        if let Some(line) = row.new_no() {
+            new = Some(new.map_or((line, line), |(min, max)| (min.min(line), max.max(line))));
+        }
+        if let Some(line) = row.old_no() {
+            old = Some(old.map_or((line, line), |(min, max)| (min.min(line), max.max(line))));
+        }
     }
-    let snippet = selected.iter().map(|r| r.marker_text()).collect::<Vec<_>>().join("\n");
-    let new_nos: Vec<u32> = selected.iter().filter_map(|r| r.new_no()).collect();
-    if let (Some(&min), Some(&max)) = (new_nos.iter().min(), new_nos.iter().max()) {
-        return Some((Side::New, min, max, snippet));
-    }
-    let old_nos: Vec<u32> = selected.iter().filter_map(|r| r.old_no()).collect();
-    let min = *old_nos.iter().min()?;
-    let max = *old_nos.iter().max()?;
-    Some((Side::Old, min, max, snippet))
+    let (side, (start, end)) =
+        new.map(|range| (Side::New, range)).or_else(|| old.map(|range| (Side::Old, range)))?;
+    Some((side, start, end, snippet))
 }
 
 #[cfg(test)]

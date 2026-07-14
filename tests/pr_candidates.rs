@@ -9,7 +9,7 @@ use common::Repo;
 use herdr_reviewr::config::{PluginConfig, plugin_config_in};
 use herdr_reviewr::forge::fetch_input;
 use herdr_reviewr::git::{
-    GitFail, OriginIdentity, PrLocal, RepoTarget, ahead_behind_oids,
+    GitFail, OriginIdentity, PrFetchInput, RepoTarget, ahead_behind_oids,
     pr_local as pr_local_with_config,
 };
 use std::path::Path;
@@ -36,7 +36,7 @@ fn defaults() -> PluginConfig {
     PluginConfig::default()
 }
 
-fn pr_local(repo: &Path, base: Option<&str>) -> Result<PrLocal, GitFail> {
+fn pr_local(repo: &Path, base: Option<&str>) -> Result<PrFetchInput, GitFail> {
     let config = defaults();
     pr_local_with_config(repo, base, config.base_branches(), None)
 }
@@ -212,9 +212,10 @@ fn origin_identity_uses_instead_of_rewrite_and_ignores_pushurl() {
 }
 
 #[test]
-fn fetch_input_changes_with_head_candidates_and_base_configuration() {
+fn fetch_input_changes_only_with_derived_query_state() {
     let repo = worktree();
     let first = fetch_input(repo.path(), None, &defaults()).unwrap();
+    assert_eq!(fetch_input(repo.path(), Some("main"), &defaults()).unwrap(), first);
 
     repo.git(&["update-ref", "refs/remotes/origin/published", "HEAD"]);
     let candidate_changed = fetch_input(repo.path(), None, &defaults()).unwrap();
@@ -235,7 +236,7 @@ fn fetch_input_changes_with_head_candidates_and_base_configuration() {
     let custom = plugin_config_in(config_dir.path()).unwrap();
     let base_changed = fetch_input(repo.path(), None, &custom).unwrap();
     assert_ne!(base_changed, head_changed);
-    assert_eq!(base_changed.base_branches, ["origin/develop", "develop"]);
+    assert_ne!(base_changed.candidates, head_changed.candidates);
 }
 
 #[test]
