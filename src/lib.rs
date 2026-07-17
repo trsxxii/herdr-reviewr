@@ -961,7 +961,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> 
     // The bound character shortcuts dispatch through the frame's keymap; a `ctrl` chord is
     // never a bound key. `↓`/`↑` are fixed synonyms of the `down`/`up` actions, folded in here
     // so every context pairs them exactly once. The other fixed keys (`tab`, `esc`, the page
-    // keys, `←`/`→`) stay hardcoded per context below (`specs/tui.md`).
+    // keys, `←`/`→`) stay hardcoded per context below (`specs/input.md`).
     let action = match key.code {
         Char(c) if !ctrl => keymap.action_for(c),
         Down => Some(K::Down),
@@ -970,7 +970,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> 
     };
 
     // An armed crossing waits for a repeat of the hunk step that armed it. Every other key drops
-    // it, and still does its own work (`specs/tui.md`). The steps themselves settle their arm in
+    // it, and still does its own work (`specs/input.md`). The steps themselves settle their arm in
     // `step_hunk`, which is what makes the other direction disarm too.
     if !matches!(action, Some(K::NextHunk | K::PrevHunk)) {
         app.disarm_cross();
@@ -1000,7 +1000,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> 
     }
 
     // The comments-list overlay acts through the same bindings and closes on `esc` and the
-    // `comments` binding (`specs/tui.md`).
+    // `comments` binding (`specs/input.md`).
     if app.mode == Mode::List {
         match (action, key.code) {
             (Some(K::Comments), _) | (_, Esc) => app.close_list(),
@@ -1109,7 +1109,7 @@ pub fn handle_mouse(
         return Ok(());
     }
     // A mouse gesture is one of the "any other input" that drops an armed crossing: the reviewer
-    // who reaches for the mouse has left the file's edge behind (`specs/tui.md`). Pointer motion
+    // who reaches for the mouse has left the file's edge behind (`specs/input.md`). Pointer motion
     // is not a gesture — capture reports every move over the pane, and a pointer resting on the
     // sidebar would otherwise disarm the crossing without the reviewer touching anything.
     if !matches!(m.kind, MouseEventKind::Moved) {

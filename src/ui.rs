@@ -406,7 +406,7 @@ pub fn hit_header(area: Rect, app: &App, keymap: &Keymap, col: u16, row: u16) ->
 }
 
 /// The three tabs and their labels, left to right, each led by its `tab-*` action's hint key
-/// (`specs/tui.md`). Column math uses display width, since a bound hint key can be wide.
+/// (`specs/input.md`). Column math uses display width, since a bound hint key can be wide.
 fn tab_labels(keymap: &Keymap) -> [(Tab, String); 3] {
     use crate::keymap::Action as K;
     [
@@ -824,7 +824,7 @@ fn render_diff_view(frame: &mut Frame, app: &App, area: Rect) {
     let row_lines = |i: usize| -> Vec<Line> {
         let state = RowState {
             // The cursor row is always marked, dimmed while the pane is unfocused, exactly as
-            // the file list marks its own (`specs/tui.md`). A hunk step driven from the list
+            // the file list marks its own (`specs/input.md`). A hunk step driven from the list
             // moves this cursor, so hiding it would leave the jump with nothing to show.
             commented: commented.contains(&i),
             cursor: i == app.diff_cursor,
@@ -1192,7 +1192,7 @@ fn render_composer(frame: &mut Frame, app: &App, area: Rect) {
 fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
     use crate::keymap::Action as K;
     use FooterAction as A;
-    // A rebindable action's hint is its first bound key (`specs/tui.md`).
+    // A rebindable action's hint is its first bound key (`specs/input.md`).
     let hint = |action: K| app.keymap().hint(action).to_string();
     let (k, l): (String, &str) = match action {
         A::Comment => (hint(K::Comment), "comment"),
@@ -1269,7 +1269,7 @@ fn action_spans(app: &App, acts: &[(FooterAction, Tier)]) -> Vec<Span<'static>> 
 
 /// The footer action bar: the context's actions (primary highlighted) packed left, the dim
 /// orientation cluster packed right, fitting one line — orientation dropped first, then trailing
-/// `Normal` actions, with a trailing `…` marking anything clipped (`specs/tui.md`).
+/// `Normal` actions, with a trailing `…` marking anything clipped (`specs/input.md`).
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     let p = app.palette();
     let w = area.width as usize;
@@ -1406,7 +1406,7 @@ fn selectable_row(
     ListItem::new(Line::from(spans))
 }
 
-// --- PR tab (specs/forge-host.md, specs/tui.md) --------------------------------
+// --- PR tab (specs/forge-host.md, specs/pr-tab.md) --------------------------------
 
 /// The header for the read-only PR tab: the tab names, then a right-anchored, clickable
 /// `status #number ↗` chip (status colored by lifecycle, the `↗` sharing the number's colour),
@@ -1695,7 +1695,7 @@ fn saturating_row(scroll: usize) -> u16 {
 
 /// A scrollbar in `track` when the content overflows the pane —
 /// rendered markdown has no line numbers, so this is its position feedback
-/// (`specs/diff-view.md`, `specs/tui.md`). `max` is the maximum useful scroll; zero
+/// (`specs/diff-view.md`, `specs/pr-tab.md`). `max` is the maximum useful scroll; zero
 /// (content fits) paints nothing.
 fn render_overflow_scrollbar(
     frame: &mut Frame,
@@ -1786,7 +1786,7 @@ fn render_pr_read(frame: &mut Frame, app: &App, area: Rect) {
     let mut body_meta: Option<(usize, crate::markdown::Rendered)> = None;
     if let Some(cm) = selected {
         // The finding's diff hunk stays plain `+`/`−`-colored lines; only the prose body
-        // renders as markdown (specs/tui.md).
+        // renders as markdown (specs/pr-tab.md).
         if let Some(hunk) = &cm.snippet {
             for raw in hunk.lines() {
                 let color = match raw.bytes().next() {

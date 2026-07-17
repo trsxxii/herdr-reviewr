@@ -1,12 +1,12 @@
 ---
 Status: Current
 Created: 2026-06-27
-Last edited: 2026-07-15
+Last edited: 2026-07-17
 ---
 
 # forge host
 
-How reviewr reads one pull request from GitHub — identity, state, checks, comments — through the `gh` CLI, for the read-only `PR` tab (`tui.md`). It never writes back.
+How reviewr reads one pull request from GitHub — identity, state, checks, comments — through the `gh` CLI, for the read-only `PR` tab (`pr-tab.md`). It never writes back.
 
 ## Overview
 
@@ -61,10 +61,7 @@ github_host = "github.example.com"
 
 Host matching is case-insensitive. A missing setting adds no Enterprise host. `github.com` remains supported when the setting is present.
 
-A readable, supported remote named `upstream` is authoritative. An absent or unusable `upstream`
-identity falls back to `origin`; a Git read failure stays visible and never falls through. Both use
-the primary fetch URL after Git's `url.*.insteadOf` rewrite. A separate push URL does not affect PR
-reads.
+Both remotes use the primary fetch URL after Git's `url.*.insteadOf` rewrite. A separate push URL does not affect PR reads.
 
 | remote state                                                               | outcome                                                                  |
 | -------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
@@ -106,10 +103,7 @@ Each fetch re-derives and deduplicates the possible publication names in this or
 What a user observes:
 
 - A worktree pushed as `git push origin HEAD:<other-name>` resolves its PR. The push updated a distance-0 candidate.
-- One tip pushed under two names resolves to whichever name holds the open PR.
-- A stale upstream never hides a live PR on another candidate. An open PR beats a merged one and beats none.
 - A teammate's branch parked at this worktree's exact `HEAD` never beats the branch git says this worktree pushes to.
-- Stacked branches resolve to the nearest branch of the stack holding an open PR. The recorded push destination outranks the whole stack.
 - A remote branch descending from `HEAD` can be a colleague's continuation of this work. Its PR resolves when no better candidate has one, and the header names the branch.
 - Between a rebase and its force-push, a branch published under a different name with no upstream shows the empty state. The push restores it on the next poll.
 
@@ -142,7 +136,7 @@ What a user observes:
 - A fetch-input change observed on refresh clears the current PR. It starts a fetch while the tab is active; otherwise the next tab entry starts it.
 - One fetch is in flight at a time. One or more triggers arriving mid-flight supersede its result and start one fresh fetch when it completes.
 - A GitHub change during a fetch can appear on the following fetch.
-- Each fetch uses one snapshot of reviewr's config for host and base selection. A later fetch sees a config edit without restarting reviewr.
+- Each fetch uses one validated config snapshot for host and base selection (→ CFG-ONE-SNAPSHOT, `config.md`).
 - A GitHub result paints only if the current config, repository target, pinned `HEAD`, and candidate
   branches still match the input that produced it. If reviewr cannot prove that match, the result
   never paints. An active tab starts one replacement; an inactive tab waits for entry.
@@ -156,13 +150,11 @@ What a user observes:
 
 reviewr reads GitHub and never writes it, so every failure degrades to a clear state. `Changes` and `All files` are unaffected.
 
-- A missing `gh` preserves a same-input snapshot and shows the install remedy. With no same-input snapshot, the remedy fills the tab.
-- An unauthenticated fetch preserves a same-input snapshot and shows `gh auth login --hostname <host>`. With no same-input snapshot, the remedy fills the tab.
+- A same-input failure preserves the visible snapshot and shows its remedy. With no same-input snapshot, the remedy fills the tab. The remedies: a missing `gh` shows the install step, an unauthenticated fetch shows `gh auth login --hostname <host>`, any other fetch failure shows the retry error.
 - A failure before the repository target resolves replaces any snapshot with the retryable Git error. reviewr cannot prove that the snapshot still belongs to the current target.
 - A branch-state Git failure after the same repository target resolves preserves the visible
   same-target snapshot with the retryable Git error.
 - An unsupported origin names the host and points Enterprise users to `github_host`.
-- Any other fetch failure preserves a same-input snapshot and shows the retry error. With no same-input snapshot, the error fills the tab.
 - No PR at any lifecycle state shows a calm empty state. The next poll lights the tab up when a PR appears.
 - Every read is side-effect-free.
 - Two active PR tabs on one worktree converge within one poll interval. An inactive tab catches up when entered.
@@ -170,8 +162,7 @@ reviewr reads GitHub and never writes it, so every failure degrades to a clear s
 ## Non-goals
 
 - No writes to GitHub. reviewr never posts, resolves a thread, re-runs a check, or merges. It never routes PR feedback to the agent.
-- No repository selector or cross-repository search. A readable, supported `upstream` is
-  authoritative; an unusable `upstream` identity falls back to `origin`.
+- No repository selector or cross-repository search.
 - No different parent repositories across sibling worktrees from one clone. Use a separate clone for each parent.
 - No SSH host-alias normalization. An alias-only repository needs a canonical-host remote.
 - No discovery of an unrecorded publication name on a non-`origin` remote. The local branch name or a recorded upstream must identify it.
@@ -182,6 +173,6 @@ reviewr reads GitHub and never writes it, so every failure degrades to a clear s
 ## Related specs
 
 - [configuration](./config.md)
-- [tui](./tui.md)
+- [pr-tab](./pr-tab.md)
 - [herdr-host](./herdr-host.md)
 - [overview](./overview.md)

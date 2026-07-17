@@ -94,7 +94,7 @@ struct TabStash {
 
 /// A file crossing offered by the footer, waiting for the hunk step that armed it to repeat: the
 /// direction it crosses in, and the file it resolved to open. Holding the file spares the second
-/// press the walk the first one already paid for (specs/tui.md).
+/// press the walk the first one already paid for (specs/input.md).
 #[derive(Clone, Debug)]
 struct ArmedCross {
     forward: bool,
@@ -114,7 +114,7 @@ pub enum Mode {
 }
 
 /// A footer action — what the bar offers for the current context. Semantic only: the renderer
-/// maps each to its key glyph and label and styles it by [`Tier`] (`specs/tui.md`).
+/// maps each to its key glyph and label and styles it by [`Tier`] (`specs/input.md`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FooterAction {
     Comment,
@@ -193,7 +193,7 @@ pub struct App {
     /// cursor into view. The wheel never sets it.
     pub reveal_diff: bool,
     /// The file crossing a hunk step armed when it found no further hunk in the open file. The
-    /// next step the same way takes it, and any other input drops it (specs/tui.md).
+    /// next step the same way takes it, and any other input drops it (specs/input.md).
     armed_cross: Option<ArmedCross>,
     /// Whether the current compose was opened from the comments-list overlay, so finishing it
     /// returns there rather than dropping to the diff.
@@ -727,7 +727,7 @@ impl App {
         if !self.composing() && self.mode != Mode::List {
             // A poll keeps the reader on the same file; only a different shown file resets
             // the diff view to the top. It also drops an armed crossing, which was armed at the
-            // edge of a file that is no longer the one on screen (specs/tui.md).
+            // edge of a file that is no longer the one on screen (specs/input.md).
             if self.shown_entry().map(|e| e.path) != self.diff_path {
                 self.reset_diff_view();
                 self.armed_cross = None;
@@ -1447,7 +1447,7 @@ impl App {
         Ok(())
     }
 
-    // ---- PR tab (specs/forge-host.md, specs/tui.md) -------------------------------------
+    // ---- PR tab (specs/forge-host.md, specs/pr-tab.md) -------------------------------------
 
     /// Clear a snapshot whose complete fetch input no longer matches the worktree.
     pub fn clear_pr(&mut self) {
@@ -1481,7 +1481,7 @@ impl App {
         // Follow the selected row by identity, not index, so a refresh that inserts a newer
         // comment (the list is newest-first) keeps the cursor on the same one and leaves the read
         // scroll intact — only a vanished or absent selection resets it (mirrors the file tabs'
-        // poll-preservation, specs/tui.md). The pinned description row's identity is itself:
+        // poll-preservation, specs/pr-tab.md). The pinned description row's identity is itself:
         // it survives while the new snapshot still has a description, and an emptied one
         // vanishes like a deleted comment.
         let on_description = self.pr_on_description();
@@ -1505,7 +1505,7 @@ impl App {
         } else {
             // The selection vanished (or there was none): clamp the cursor into range,
             // and reset the read pane whenever a selected row disappeared — the pane now
-            // shows a different row (specs/tui.md).
+            // shows a different row (specs/pr-tab.md).
             let clamped = self.pr_row_count().saturating_sub(1);
             if self.pr_cursor > clamped || on_description || selected.is_some() {
                 self.pr_read_scroll = 0;
@@ -1542,7 +1542,7 @@ impl App {
     }
 
     /// Whether the snapshot carries a PR description — the pinned `description` row's
-    /// existence condition (specs/tui.md).
+    /// existence condition (specs/pr-tab.md).
     #[must_use]
     pub fn pr_has_description(&self) -> bool {
         self.pr_snapshot().is_some_and(|s| !s.body.trim().is_empty())
@@ -1614,7 +1614,7 @@ impl App {
             clamp_scroll(self.pr_read_scroll, delta, self.pr_read_max_scroll.get());
     }
 
-    /// Open the pull request in the browser (`specs/tui.md`). A resolved PR always carries a
+    /// Open the pull request in the browser (`specs/pr-tab.md`). A resolved PR always carries a
     /// `url`, so there is nothing to guard against.
     pub fn pr_open(&mut self) {
         let Some(url) = self.pr_snapshot().map(|s| s.url.clone()) else {
@@ -1701,7 +1701,7 @@ impl App {
         }
     }
 
-    /// `next-file`: open the next file, from either pane (`specs/tui.md`).
+    /// `next-file`: open the next file, from either pane (`specs/input.md`).
     pub fn next_file(&mut self) {
         self.step_file(true);
     }
@@ -1728,7 +1728,7 @@ impl App {
         self.reveal_files = true;
     }
 
-    /// `next-hunk`: jump to the nearest hunk below the cursor (`specs/tui.md`).
+    /// `next-hunk`: jump to the nearest hunk below the cursor (`specs/input.md`).
     pub fn next_hunk(&mut self) {
         self.step_hunk(true);
     }
@@ -1741,7 +1741,7 @@ impl App {
     /// Move the diff cursor to the nearest hunk's first changed row past it. With no hunk left
     /// this way, the first press arms the crossing and the second one takes it, so a held key
     /// stops at each file. Only `Changes` paints change rows — `All files` is all context, and
-    /// the preview has no cursor — so a step anywhere else has no target (`specs/tui.md`).
+    /// the preview has no cursor — so a step anywhere else has no target (`specs/input.md`).
     fn step_hunk(&mut self, forward: bool) {
         // Any step drops the standing arm. A step the other way is not the repeat it waits for.
         let armed = self.armed_cross.take().filter(|a| a.forward == forward);
@@ -1827,13 +1827,13 @@ impl App {
     }
 
     /// Drop an armed crossing. Every input but a repeat of the step that armed it disarms
-    /// (`specs/tui.md`).
+    /// (`specs/input.md`).
     pub fn disarm_cross(&mut self) {
         self.armed_cross = None;
     }
 
     /// Whether the traversal keys act at all: a live selection holds the cursor still, since a
-    /// jump would silently drop the selection under it (`specs/tui.md`).
+    /// jump would silently drop the selection under it (`specs/input.md`).
     fn can_traverse(&self) -> bool {
         self.plugin_config().is_some() && self.select_anchor.is_none()
     }
@@ -2431,7 +2431,7 @@ impl App {
     /// The actions the footer offers for the current context, most-relevant first, each tagged
     /// with its visual tier. Pure — a context → action mapping, unit-tested without a terminal.
     /// The renderer maps each to a key+label, styles it by tier, and drops the least relevant
-    /// (orientation first) to fit one line (`specs/tui.md`).
+    /// (orientation first) to fit one line (`specs/input.md`).
     #[must_use]
     pub fn footer_actions(&self) -> Vec<(FooterAction, Tier)> {
         use FooterAction as A;
@@ -2478,7 +2478,7 @@ impl App {
 
         if self.preview_active() && self.focus == Focus::Diff {
             // The read-only preview: the way back to the commentable source leads, and
-            // no comment key is offered (specs/tui.md); the shared tail below adds the
+            // no comment key is offered (specs/input.md); the shared tail below adds the
             // scope, send, and orientation actions. With the file list focused, the
             // tree's own actions apply instead.
             out.push((A::Preview, Primary));
@@ -2511,7 +2511,7 @@ impl App {
             out.push((A::Comment, Primary));
             out.push((A::Select, Normal));
             // On a markdown file's source line that previews, surface the way in —
-            // otherwise the rendered view is undiscoverable (specs/tui.md). A deleted
+            // otherwise the rendered view is undiscoverable (specs/input.md). A deleted
             // file, holding no current content, offers nothing.
             if self.previewable() {
                 out.push((A::Preview, Normal));
@@ -2520,7 +2520,7 @@ impl App {
 
         // An armed crossing leads the bar: nothing else on screen says the next press leaves the
         // file. The cursor's own action stays, demoted — commenting still works here
-        // (specs/tui.md).
+        // (specs/input.md).
         if let Some(forward) = self.armed_cross() {
             out[0].1 = Normal;
             out.insert(0, (A::CrossFile { forward }, Primary));

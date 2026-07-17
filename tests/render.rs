@@ -1131,7 +1131,7 @@ fn a_deleted_markdown_file_offers_no_preview_in_the_footer() {
     app.focus = Focus::Diff;
 
     // The deletion rows are commentable, but a deleted file has no current content, so
-    // the footer never offers the inert preview toggle (specs/tui.md).
+    // the footer never offers the inert preview toggle (specs/input.md).
     let out = render(&app);
     let footer = out.lines().last().unwrap();
     assert!(footer.contains("c comment"), "a deletion row is commentable:\n{footer}");

@@ -422,8 +422,8 @@ fn parse_plugin_config(path: &Path) -> Result<PluginConfig, PluginConfigError> {
     Ok(config)
 }
 
-/// Parse and resolve the `[keybindings]` table (`specs/config.md` K1–K2): action names from the
-/// keymap table in `specs/tui.md`, each bound to a non-empty array of one-character keys.
+/// Parse and resolve the `[keybindings]` table (`specs/config.md` `CFG-KEY-PRINTABLE`/`CFG-KEY-UNIQUE`): action names from the
+/// keymap table in `specs/input.md`, each bound to a non-empty array of one-character keys.
 fn parse_keybindings(
     path: &Path,
     value: &toml::Value,
@@ -468,7 +468,7 @@ fn parse_keybindings(
             };
             let mut it = text.chars();
             match (it.next(), it.next()) {
-                // K1's "printable" is one visible cell: a positive display width also rejects
+                // `CFG-KEY-PRINTABLE`'s "printable" is one visible cell: a positive display width also rejects
                 // the zero-width class `is_control` misses (format chars, combining marks).
                 (Some(key), None)
                     if !key.is_whitespace()
@@ -499,7 +499,7 @@ fn value_error(path: &Path, key: &str, expected: &str) -> PluginConfigError {
     PluginConfigError::new(path, format!("invalid value for `{key}`; expected {expected}"))
 }
 
-/// The one C3 unknown-key grammar, shared by the top-level table and `[keybindings]`.
+/// The one `CFG-WHOLE-FILE` unknown-key grammar, shared by the top-level table and `[keybindings]`.
 fn unknown_key_error(path: &Path, key: &str, options: &str) -> PluginConfigError {
     PluginConfigError::new(path, format!("unknown key {key:?}; expected one of {options}"))
 }

@@ -1,7 +1,7 @@
 ---
 Status: Draft
 Created: 2026-06-23
-Last edited: 2026-07-15
+Last edited: 2026-07-17
 ---
 
 # herdr-reviewr
@@ -42,12 +42,12 @@ to move the work forward.
 
 - The `Changes` view: a changed-files list per scope plus the diff viewer (`diff-view.md`).
 - The `All files` tab: a repo tree and content viewer, annotated with the active scope's changes (`file-list.md`, `diff-view.md`).
-- The `PR` tab: pull-request identity, state, checks, and comments, read from GitHub, with external links only (`forge-host.md`, `tui.md`).
+- The `PR` tab: pull-request identity, state, checks, and comments, read from GitHub, with external links only (`forge-host.md`, `pr-tab.md`).
 - Three scopes: `uncommitted`, `branch`, `last-turn` (`review-model.md`).
 - Comments anchored to `path:start-end`, held in memory for the review pass.
 - Export of all comments to the agent input or the clipboard.
 - Poll-based refresh plus a manual refresh key.
-- Keyboard and mouse input (`tui.md`).
+- Keyboard and mouse input (`input.md`).
 
 ## Roadmap
 
@@ -60,13 +60,13 @@ Named so the architecture stays open to them. None is part of this design.
 
 ## Invariants
 
-| #  | Always true                                                                                                                  |
-| -- | ----------------------------------------------------------------------------------------------------------------------------|
-| O1 | The sidebar never commits, stages, or mutates the worktree, the index, or any branch. Its one git write is the private baseline ref under `refs/reviewr/`. |
-| O2 | The sidebar never writes to GitHub. It reads the pull request through `gh` and opens links in the browser, nothing more.      |
-| O3 | A comment, saved or being typed, is never lost to a refresh or the agent's edits. Only the user removes it.                   |
-| O4 | Comments leave only by an explicit export, to the agent pane or the clipboard.                                                |
-| O5 | The crate forbids `unsafe`.                                                                                                   |
+| Always true                                                                                                                                                |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The sidebar never commits, stages, or mutates the worktree, the index, or any branch. Its one git write is the private baseline ref under `refs/reviewr/`.  |
+| The sidebar never writes to GitHub. It reads the pull request through `gh` and opens links in the browser, nothing more.                                    |
+| A comment, saved or being typed, is never lost to a refresh or the agent's edits. Only the user removes it.                                                 |
+| Comments leave only by an explicit export, to the agent pane or the clipboard.                                                                              |
+| The crate forbids `unsafe`.                                                                                                                                 |
 
 ## Related specs
 
@@ -74,6 +74,8 @@ Named so the architecture stays open to them. None is part of this design.
 - [diff-view](./diff-view.md)
 - [theme](./theme.md)
 - [file-list](./file-list.md)
+- [input](./input.md)
 - [tui](./tui.md)
+- [pr-tab](./pr-tab.md)
 - [herdr-host](./herdr-host.md)
 - [forge-host](./forge-host.md)
