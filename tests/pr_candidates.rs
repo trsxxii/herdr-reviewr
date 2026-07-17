@@ -207,6 +207,30 @@ fn secondary_configured_bases_also_exclude_points() {
 }
 
 #[test]
+fn a_parked_merged_tip_survives_as_an_absorbed_candidate() {
+    // The worktree's branch merged into main and the worktree stays parked at its tip:
+    // no point survives, but the tip rides along for the exact-head epilogue.
+    let repo = worktree();
+    repo.git(&["update-ref", "refs/remotes/origin/fix", "HEAD"]);
+    let merged_tip = head(&repo);
+    repo.git(&["switch", "-q", "main"]);
+    repo.git(&["merge", "-q", "--no-ff", "-m", "merge fix", "work"]);
+    repo.git(&["update-ref", "refs/remotes/origin/main", "main"]);
+    repo.git(&["switch", "-q", "work"]);
+    let local = pr_local(repo.path(), None).expect("pr_local");
+    assert!(local.points.is_empty(), "the tip is base history now");
+    assert_eq!(local.absorbed, [merged_tip], "the parked tip nominates the epilogue");
+
+    // A surviving point clears the absorbed set — live work owns the resolution.
+    repo.write("n.txt", "new\n");
+    repo.commit_all("new work");
+    repo.git(&["update-ref", "refs/remotes/origin/fix2", "HEAD"]);
+    let local = pr_local(repo.path(), None).expect("pr_local");
+    assert!(!local.points.is_empty());
+    assert!(local.absorbed.is_empty());
+}
+
+#[test]
 fn a_point_carries_every_origin_name_at_its_tip() {
     let repo = worktree();
     repo.git(&["update-ref", "refs/remotes/origin/feat", "HEAD"]);

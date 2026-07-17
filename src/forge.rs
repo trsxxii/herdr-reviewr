@@ -394,9 +394,9 @@ fn fetch_inner(
         // A detached HEAD (e.g. after `gh pr merge --delete-branch`) has no pin.
         return Ok(PrView::Detached);
     }
-    if input.local.points.is_empty() {
-        // No published work beyond the base — nothing can prove a PR, so nothing is
-        // fetched (`specs/forge-host.md`).
+    if input.local.points.is_empty() && input.local.absorbed.is_empty() {
+        // No published work beyond the base and no parked published tip — nothing can
+        // prove a PR, so nothing is fetched (`specs/forge-host.md`).
         return Ok(PrView::NoPr);
     }
     let target = FetchTarget {
@@ -407,7 +407,7 @@ fn fetch_inner(
         cancelled,
     };
     let source = select_source(input.origin_repository.as_ref(), repository);
-    let assoc = associate_points(&target, source, &input.local.points)?;
+    let assoc = associate_points(&target, source, &input.local.points, &input.local.absorbed)?;
     let number = match pick_open(&assoc.open, input) {
         Pick::One(n) => n,
         Pick::Ambiguous(count) => {
@@ -514,23 +514,26 @@ fn associate_points(
     target: &FetchTarget<'_>,
     source: &crate::git::RepoTarget,
     points: &[crate::git::PublicationPoint],
+    absorbed: &[String],
 ) -> Result<Association, GhError> {
     let closed = closed_aliases(points);
-    let query = build_association_query(points, &closed);
+    let query = build_association_query(points.len() + absorbed.len(), &closed);
     let mut vars = vec![
         ("so".to_string(), source.owner().to_string()),
         ("sn".to_string(), source.name().to_string()),
         ("to".to_string(), target.owner.to_string()),
         ("tn".to_string(), target.name.to_string()),
     ];
-    for (i, point) in points.iter().enumerate() {
-        vars.push((format!("p{i}"), point.oid.clone()));
+    for (i, oid) in
+        points.iter().map(|p| p.oid.as_str()).chain(absorbed.iter().map(String::as_str)).enumerate()
+    {
+        vars.push((format!("p{i}"), oid.to_string()));
     }
     for (_, var, _, name) in &closed {
         vars.push((var.clone(), name.clone()));
     }
     let v = graphql(target.repo, target.host, &query, &vars, target.cancelled)?;
-    Ok(parse_association(&v, points, &closed))
+    Ok(parse_association(&v, points, absorbed, &closed))
 }
 
 /// The aliased association query: `p{i}: object(oid:$p{i})` per publication point against
@@ -538,20 +541,17 @@ fn associate_points(
 /// the target. The target block always carries `id` — the rename-proof base filter, and
 /// the reason the block is never an empty selection set. Values ride as variables, never
 /// in the query text.
-fn build_association_query(
-    points: &[crate::git::PublicationPoint],
-    closed: &[(String, String, usize, String)],
-) -> String {
+fn build_association_query(oids: usize, closed: &[(String, String, usize, String)]) -> String {
     use std::fmt::Write;
     let mut q = String::from("query($so:String!,$sn:String!,$to:String!,$tn:String!");
-    for i in 0..points.len() {
+    for i in 0..oids {
         let _ = write!(q, ",$p{i}:GitObjectID!");
     }
     for (_, var, _, _) in closed {
         let _ = write!(q, ",${var}:String!");
     }
     q.push_str("){src:repository(owner:$so,name:$sn){");
-    for i in 0..points.len() {
+    for i in 0..oids {
         let _ = write!(
             q,
             "p{i}:object(oid:$p{i}){{... on Commit{{associatedPullRequests(first:100){{nodes{{\
@@ -581,11 +581,13 @@ fn push_unique(bucket: &mut Vec<AssocPr>, pr: AssocPr) {
 
 /// Split the association response by lifecycle. Association nodes keep only PRs whose base
 /// repository `id` equals the target's — ids survive renames and transfers, names do not.
-/// Closed nodes keep only an exact head match to their point — identity, never a name
-/// (`specs/forge-host.md`). Duplicates across points collapse.
+/// Nodes from `absorbed` aliases are admitted only as a merged PR whose head is exactly an
+/// absorbed commit — the parked epilogue. Closed nodes keep only an exact head match to
+/// their point — identity, never a name (`specs/forge-host.md`). Duplicates collapse.
 fn parse_association(
     v: &Value,
     points: &[crate::git::PublicationPoint],
+    absorbed: &[String],
     closed: &[(String, String, usize, String)],
 ) -> Association {
     let mut assoc = Association::default();
@@ -599,7 +601,8 @@ fn parse_association(
             created_at: node["createdAt"].as_str().unwrap_or_default().to_string(),
         })
     };
-    for i in 0..points.len() {
+    for i in 0..points.len() + absorbed.len() {
+        let from_absorbed = i >= points.len();
         let nodes = &v["data"]["src"][format!("p{i}").as_str()]["associatedPullRequests"]["nodes"];
         for node in nodes.as_array().into_iter().flatten() {
             let base = node["baseRepository"]["id"].as_str().unwrap_or_default();
@@ -607,6 +610,16 @@ fn parse_association(
                 continue;
             }
             let Some(pr) = pr_of(node) else { continue };
+            if from_absorbed {
+                // An absorbed commit is base history, which proves nothing by containment.
+                // Only the exact parked epilogue is admissible: a merged PR whose head is
+                // an absorbed commit itself.
+                let exact = absorbed.iter().any(|oid| oid == &pr.head_oid);
+                if exact && node["state"].as_str() == Some("MERGED") {
+                    push_unique(&mut assoc.merged, pr);
+                }
+                continue;
+            }
             match node["state"].as_str() {
                 Some("OPEN") => push_unique(&mut assoc.open, pr),
                 Some("MERGED") => push_unique(&mut assoc.merged, pr),
@@ -1150,6 +1163,7 @@ mod tests {
                 head_oid: Some(head.to_string()),
                 base_oid: Some("base".to_string()),
                 points,
+                absorbed: Vec::new(),
                 upstream: up.map(str::to_string),
                 detached: false,
             },
@@ -1193,6 +1207,33 @@ mod tests {
     }
 
     #[test]
+    fn absorbed_aliases_admit_only_an_exact_head_merged_pr() {
+        // The parked epilogue: the worktree sits on base history, so containment proves
+        // nothing — only a merged PR whose head IS the absorbed commit resolves.
+        let v = serde_json::json!({"data": {
+            "src": {
+                "p0": {"associatedPullRequests": {"nodes": [
+                    {"number": 82, "state": "MERGED", "headRefOid": "parked", "headRefName": "fix",
+                     "createdAt": "2026-07-01T00:00:00Z", "mergedAt": "2026-07-02T00:00:00Z",
+                     "baseRepository": {"id": "R1"}},
+                    {"number": 90, "state": "MERGED", "headRefOid": "other", "headRefName": "else",
+                     "createdAt": "2026-07-01T00:00:00Z", "mergedAt": "2026-07-03T00:00:00Z",
+                     "baseRepository": {"id": "R1"}},
+                    {"number": 91, "state": "OPEN", "headRefOid": "parked", "headRefName": "fix",
+                     "createdAt": "2026-07-01T00:00:00Z", "mergedAt": null,
+                     "baseRepository": {"id": "R1"}}
+                ]}}
+            },
+            "tgt": {"id": "R1"}
+        }});
+        let absorbed = vec!["parked".to_string()];
+        let a = parse_association(&v, &[], &absorbed, &[]);
+        // #90 contains the commit but its head is a stranger's; #91 is open — neither admits.
+        assert_eq!(a.merged.iter().map(|p| p.number).collect::<Vec<_>>(), [82]);
+        assert!(a.open.is_empty());
+    }
+
+    #[test]
     fn association_query_aliases_points_and_closed_names_and_never_inlines_values() {
         let points = vec![point("aaa", &[]), point("bbb", &["feat", "backup"])];
         let closed = closed_aliases(&points);
@@ -1203,7 +1244,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [("c1_0", "b1_0", 1, "feat"), ("c1_1", "b1_1", 1, "backup")]
         );
-        let q = build_association_query(&points, &closed);
+        let q = build_association_query(points.len(), &closed);
         assert!(q.starts_with(
             "query($so:String!,$sn:String!,$to:String!,$tn:String!,\
              $p0:GitObjectID!,$p1:GitObjectID!,$b1_0:String!,$b1_1:String!)"
@@ -1217,7 +1258,7 @@ mod tests {
         // With no named point, the target block still carries `id` — never an empty
         // selection set, which GitHub rejects as a parse error.
         let bare = vec![point("aaa", &[])];
-        let q = build_association_query(&bare, &closed_aliases(&bare));
+        let q = build_association_query(bare.len(), &closed_aliases(&bare));
         assert!(q.contains("tgt:repository(owner:$to,name:$tn){id }"));
     }
 
@@ -1253,7 +1294,7 @@ mod tests {
             }
         }});
         let points = vec![point("p0oid", &[]), point("p1oid", &["old-name"])];
-        let a = parse_association(&v, &points, &closed_aliases(&points));
+        let a = parse_association(&v, &points, &[], &closed_aliases(&points));
         // Open #7 appears under both points but lands once; #9 based elsewhere is dropped.
         assert_eq!(a.open.iter().map(|p| p.number).collect::<Vec<_>>(), [7]);
         assert_eq!(a.merged.iter().map(|p| p.number).collect::<Vec<_>>(), [8]);

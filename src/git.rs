@@ -261,6 +261,10 @@ pub struct PrLocalState {
     /// The publication points: the nearest ancestors of the pinned `HEAD` present on
     /// `origin`, each beyond every resolved base. Empty means no reviewable work is published.
     pub points: Vec<PublicationPoint>,
+    /// The published-but-absorbed candidates: base-history commits this worktree is
+    /// parked on, kept only when no point survives. A merged PR whose head is exactly
+    /// one of them still resolves as the epilogue (`specs/forge-host.md`).
+    pub absorbed: Vec<String>,
     /// The recorded upstream's bare branch name, the last open-PR tiebreak. A record
     /// naming a configured base is tracking, not publication, and is dropped.
     pub upstream: Option<String>,
@@ -279,16 +283,17 @@ pub fn pr_local(
     };
     let head_oid = git_tristate(repo, &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])?;
     let bases = resolve_bases(repo, base_flag, config_bases)?;
-    let points = match &head_oid {
+    let (points, absorbed) = match &head_oid {
         // With no base resolvable, no point is provable (`specs/forge-host.md`).
         Some(head) if !bases.is_empty() => publication_points(repo, head, &bases)?,
-        _ => Vec::new(),
+        _ => (Vec::new(), Vec::new()),
     };
     let upstream = recorded_upstream(repo, &branch, base_flag, config_bases)?;
     Ok(PrLocalState {
         head_oid,
         base_oid: bases.into_iter().next(),
         points,
+        absorbed,
         upstream,
         detached: false,
     })
@@ -352,18 +357,20 @@ fn origin_tips(repo: &Path) -> Result<Vec<(String, String)>, GitFail> {
 
 /// The publication points: the boundary of the unpushed range — the nearest ancestors of
 /// `head` present on any `origin/*` ref — or `head` itself when nothing is unpushed. Points
-/// that are ancestors of any resolved base prove nothing and are dropped. Capped at 8
-/// survivors from at most 32 boundary commits, so a merge-heavy frontier stays bounded.
+/// that are ancestors of any resolved base prove nothing for an open PR and become
+/// `absorbed` candidates instead, kept only when no point survives — a merged PR whose
+/// head is exactly one of them is still this worktree's epilogue. Capped at 8 survivors
+/// and 4 absorbed from at most 32 boundary commits, so a merge-heavy frontier stays bounded.
 fn publication_points(
     repo: &Path,
     head: &str,
     bases: &[String],
-) -> Result<Vec<PublicationPoint>, GitFail> {
+) -> Result<(Vec<PublicationPoint>, Vec<String>), GitFail> {
     let tips = origin_tips(repo)?;
     if tips.is_empty() {
         // Nothing is published at all; skip the history walk, which `--not
         // --remotes=origin` would otherwise run unbounded.
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
     let out = git_strict(repo, &["rev-list", "--boundary", head, "--not", "--remotes=origin"])?;
     let mut oids: Vec<String> = Vec::new();
@@ -381,12 +388,16 @@ fn publication_points(
     }
     oids.truncate(32);
     let mut points = Vec::new();
+    let mut absorbed = Vec::new();
     'point: for oid in oids {
         if points.len() >= 8 {
             break;
         }
         for base in bases {
             if is_ancestor(repo, &oid, base)? {
+                if absorbed.len() < 4 {
+                    absorbed.push(oid);
+                }
                 continue 'point;
             }
         }
@@ -394,7 +405,12 @@ fn publication_points(
             tips.iter().filter(|(tip, _)| tip == &oid).map(|(_, name)| name.clone()).collect();
         points.push(PublicationPoint { oid, names });
     }
-    Ok(points)
+    // Absorbed candidates matter only when nothing provable remains; a live point
+    // owns the resolution outright.
+    if !points.is_empty() {
+        absorbed.clear();
+    }
+    Ok((points, absorbed))
 }
 
 /// Whether `commit` is an ancestor of (or equal to) `of`.

@@ -1271,6 +1271,7 @@ mod refresh_tests {
                     oid: head.to_string(),
                     names: vec!["feature".to_string()],
                 }],
+                absorbed: Vec::new(),
                 upstream: None,
                 detached: false,
             },
