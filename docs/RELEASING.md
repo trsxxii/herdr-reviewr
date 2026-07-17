@@ -88,5 +88,9 @@ end-to-end test: it exercises the exact `herdr plugin install` path a user hits.
 - **Code signing** is a local-dev concern, not a release one: CI produces fresh binaries, while a
   contributor's in-place rebuild needs `just install` (see the README) to avoid an Apple-Silicon
   SIGKILL. Release assets are downloaded fresh by `install.sh`, so they are unaffected.
+- **QA against the installed plugin** uses `just qa-install`, never a bare `cp`. Overwriting the
+  installed binary in place invalidates its cached code signature, macOS SIGKILLs every launch,
+  and the pane opens dead with no error — the recipe replaces the inode and ad-hoc re-signs.
+  `just qa-restore` puts the released binary back.
 - **`--verify-tag`** means the tag must exist on the remote before the Release is created — push
   the tag, don't create the Release by hand first.

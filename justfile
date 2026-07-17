@@ -39,6 +39,31 @@ install:
     cp target/release/herdr-reviewr bin/herdr-reviewr
     [ "$(uname)" = "Darwin" ] && codesign --force --sign - bin/herdr-reviewr || true
 
+# The rm + cp + codesign order below is load-bearing: overwriting the installed binary in
+# place invalidates its cached code signature and macOS SIGKILLs every launch, so the pane
+# opens dead with no error. A fresh inode plus an ad-hoc re-sign avoids that. The previous
+# binary is kept once as herdr-reviewr.release-backup (`just qa-restore` brings it back).
+
+# build release and swap it into the installed GitHub plugin, for QA against the live pane
+qa-install:
+    #!/usr/bin/env sh
+    set -eu
+    cargo build --release
+    bin="$(ls -d "$HOME"/.config/herdr/plugins/github/persiyanov.reviewr-*/bin/herdr-reviewr | head -1)"
+    [ -f "$bin.release-backup" ] || cp "$bin" "$bin.release-backup"
+    rm "$bin"
+    cp target/release/herdr-reviewr "$bin"
+    [ "$(uname)" = "Darwin" ] && codesign --force --sign - "$bin" || true
+    echo "installed local build at $bin"
+
+# restore the released binary the last `just qa-install` replaced
+qa-restore:
+    #!/usr/bin/env sh
+    set -eu
+    bin="$(ls -d "$HOME"/.config/herdr/plugins/github/persiyanov.reviewr-*/bin/herdr-reviewr | head -1)"
+    cp "$bin.release-backup" "$bin"
+    echo "restored release binary at $bin"
+
 # everything CI runs, locally
 ci: fmt-check lint test
     cargo build --release
