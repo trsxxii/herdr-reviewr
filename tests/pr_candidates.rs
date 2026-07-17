@@ -231,6 +231,49 @@ fn a_parked_merged_tip_survives_as_an_absorbed_candidate() {
 }
 
 #[test]
+fn an_explicit_branch_fetch_is_a_claim_and_a_bare_fetch_is_not() {
+    // A zero-work worktree reset to an explicitly fetched branch: the for-merge
+    // FETCH_HEAD entry carries the claim (`specs/forge-host.md`).
+    let repo = worktree();
+    repo.git(&["switch", "-qC", "work", "main"]); // zero work
+    let git_dir = repo.git(&["rev-parse", "--absolute-git-dir"]).trim().to_string();
+    let oid = head(&repo);
+    std::fs::write(
+        std::path::Path::new(&git_dir).join("FETCH_HEAD"),
+        format!(
+            "{oid}\t\tbranch 'persiyanov/feature' of https://github.com/owner/repo\n\
+             {oid}\tnot-for-merge\tbranch 'other' of https://github.com/owner/repo\n"
+        ),
+    )
+    .unwrap();
+    let local = pr_local(repo.path(), None).expect("pr_local");
+    assert_eq!(local.fetched, Some((oid.clone(), "persiyanov/feature".to_string())));
+
+    // A bare fetch marks every line not-for-merge and claims nothing.
+    std::fs::write(
+        std::path::Path::new(&git_dir).join("FETCH_HEAD"),
+        format!("{oid}\tnot-for-merge\tbranch 'other' of https://github.com/owner/repo\n"),
+    )
+    .unwrap();
+    let local = pr_local(repo.path(), None).expect("pr_local");
+    assert_eq!(local.fetched, None);
+
+    // Provable work makes the record irrelevant: points own the resolution.
+    repo.git(&["switch", "-q", "work"]);
+    repo.write("w.txt", "work\n");
+    repo.commit_all("real work");
+    repo.git(&["update-ref", "refs/remotes/origin/work", "HEAD"]);
+    std::fs::write(
+        std::path::Path::new(&git_dir).join("FETCH_HEAD"),
+        format!("{oid}\t\tbranch 'persiyanov/feature' of https://github.com/owner/repo\n"),
+    )
+    .unwrap();
+    let local = pr_local(repo.path(), None).expect("pr_local");
+    assert!(!local.points.is_empty());
+    assert_eq!(local.fetched, None);
+}
+
+#[test]
 fn a_point_carries_every_origin_name_at_its_tip() {
     let repo = worktree();
     repo.git(&["update-ref", "refs/remotes/origin/feat", "HEAD"]);
