@@ -394,13 +394,9 @@ fn fetch_inner(
         // A detached HEAD (e.g. after `gh pr merge --delete-branch`) has no pin.
         return Ok(PrView::Detached);
     }
-    if input.local.points.is_empty()
-        && input.local.absorbed.is_empty()
-        && input.local.fetched.is_none()
-    {
-        // No published work beyond the base, no parked published tip, and no explicitly
-        // fetched branch — nothing can prove or claim a PR, so nothing is fetched
-        // (`specs/forge-host.md`).
+    if input.local.points.is_empty() && input.local.absorbed.is_empty() {
+        // No published work beyond the base and no parked published tip — nothing can
+        // prove a PR, so nothing is fetched (`specs/forge-host.md`).
         return Ok(PrView::NoPr);
     }
     let target = FetchTarget {
@@ -411,34 +407,7 @@ fn fetch_inner(
         cancelled,
     };
     let source = select_source(input.origin_repository.as_ref(), repository);
-    let mut assoc = associate_points(
-        &target,
-        source,
-        &input.local.points,
-        &input.local.absorbed,
-        input.local.fetched.as_ref(),
-    )?;
-    if let Some((fetched_oid, _)) = &input.local.fetched {
-        // The explicit fetch record nominates by name; the fetched commit corroborates.
-        // A PR head that is the fetched commit, or provably descends from it locally,
-        // is this seat's claimed work. Anything unprovable stays invisible.
-        for pr in std::mem::take(&mut assoc.fetched) {
-            let corroborated = pr.head_oid == *fetched_oid
-                || (crate::git::oid_known(repo, &pr.head_oid)
-                    .map_err(|error| GhError::LocalGit(error.0))?
-                    && crate::git::is_ancestor(repo, fetched_oid, &pr.head_oid)
-                        .map_err(|error| GhError::LocalGit(error.0))?);
-            if !corroborated {
-                continue;
-            }
-            match pr.state.as_str() {
-                "OPEN" => push_unique(&mut assoc.open, pr),
-                "MERGED" => push_unique(&mut assoc.merged, pr),
-                "CLOSED" => push_unique(&mut assoc.closed, pr),
-                _ => {}
-            }
-        }
-    }
+    let assoc = associate_points(&target, source, &input.local.points, &input.local.absorbed)?;
     let number = match pick_open(&assoc.open, input) {
         Pick::One(n) => n,
         Pick::Ambiguous(count) => {
@@ -493,7 +462,6 @@ struct FetchTarget<'a> {
 #[derive(Debug)]
 struct AssocPr {
     number: u64,
-    state: String,
     head_oid: String,
     head_ref: String,
     merged_at: String,
@@ -507,9 +475,6 @@ struct Association {
     open: Vec<AssocPr>,
     merged: Vec<AssocPr>,
     closed: Vec<AssocPr>,
-    /// The explicitly fetched branch's PRs, raw — corroborated by the caller against
-    /// the fetched commit before joining a lifecycle bucket.
-    fetched: Vec<AssocPr>,
 }
 
 /// The repository the association query runs against: the origin repository, where the
@@ -550,10 +515,9 @@ fn associate_points(
     source: &crate::git::RepoTarget,
     points: &[crate::git::PublicationPoint],
     absorbed: &[String],
-    fetched: Option<&(String, String)>,
 ) -> Result<Association, GhError> {
     let closed = closed_aliases(points);
-    let query = build_association_query(points.len() + absorbed.len(), &closed, fetched.is_some());
+    let query = build_association_query(points.len() + absorbed.len(), &closed);
     let mut vars = vec![
         ("so".to_string(), source.owner().to_string()),
         ("sn".to_string(), source.name().to_string()),
@@ -568,11 +532,8 @@ fn associate_points(
     for (_, var, _, name) in &closed {
         vars.push((var.clone(), name.clone()));
     }
-    if let Some((_, branch)) = fetched {
-        vars.push(("f".to_string(), branch.clone()));
-    }
     let v = graphql(target.repo, target.host, &query, &vars, target.cancelled)?;
-    Ok(parse_association(&v, points, absorbed, &closed, fetched.is_some()))
+    Ok(parse_association(&v, points, absorbed, &closed))
 }
 
 /// The aliased association query: `p{i}: object(oid:$p{i})` per publication point against
@@ -580,11 +541,7 @@ fn associate_points(
 /// the target. The target block always carries `id` — the rename-proof base filter, and
 /// the reason the block is never an empty selection set. Values ride as variables, never
 /// in the query text.
-fn build_association_query(
-    oids: usize,
-    closed: &[(String, String, usize, String)],
-    fetched: bool,
-) -> String {
+fn build_association_query(oids: usize, closed: &[(String, String, usize, String)]) -> String {
     use std::fmt::Write;
     let mut q = String::from("query($so:String!,$sn:String!,$to:String!,$tn:String!");
     for i in 0..oids {
@@ -592,9 +549,6 @@ fn build_association_query(
     }
     for (_, var, _, _) in closed {
         let _ = write!(q, ",${var}:String!");
-    }
-    if fetched {
-        q.push_str(",$f:String!");
     }
     q.push_str("){src:repository(owner:$so,name:$sn){");
     for i in 0..oids {
@@ -606,13 +560,6 @@ fn build_association_query(
         );
     }
     q.push_str("} tgt:repository(owner:$to,name:$tn){id ");
-    if fetched {
-        q.push_str(
-            "f:pullRequests(headRefName:$f, states:[OPEN,MERGED,CLOSED], first:10, \
-             orderBy:{field:CREATED_AT, direction:DESC}){nodes{\
-             number state headRefOid headRefName createdAt mergedAt}} ",
-        );
-    }
     for (alias, var, _, _) in closed {
         let _ = write!(
             q,
@@ -642,14 +589,12 @@ fn parse_association(
     points: &[crate::git::PublicationPoint],
     absorbed: &[String],
     closed: &[(String, String, usize, String)],
-    fetched: bool,
 ) -> Association {
     let mut assoc = Association::default();
     let target_id = v["data"]["tgt"]["id"].as_str().unwrap_or_default();
     let pr_of = |node: &Value| -> Option<AssocPr> {
         Some(AssocPr {
             number: node["number"].as_u64()?,
-            state: node["state"].as_str().unwrap_or_default().to_string(),
             head_oid: node["headRefOid"].as_str().unwrap_or_default().to_string(),
             head_ref: node["headRefName"].as_str().unwrap_or_default().to_string(),
             merged_at: node["mergedAt"].as_str().unwrap_or_default().to_string(),
@@ -690,13 +635,6 @@ fn parse_association(
                 continue;
             }
             push_unique(&mut assoc.closed, pr);
-        }
-    }
-    if fetched {
-        let nodes = &v["data"]["tgt"]["f"]["nodes"];
-        for node in nodes.as_array().into_iter().flatten() {
-            let Some(pr) = pr_of(node) else { continue };
-            push_unique(&mut assoc.fetched, pr);
         }
     }
     assoc
@@ -1226,7 +1164,6 @@ mod tests {
                 base_oid: Some("base".to_string()),
                 points,
                 absorbed: Vec::new(),
-                fetched: None,
                 upstream: up.map(str::to_string),
                 detached: false,
             },
@@ -1236,7 +1173,6 @@ mod tests {
     fn assoc(number: u64, head_oid: &str, head_ref: &str) -> AssocPr {
         AssocPr {
             number,
-            state: String::new(),
             head_oid: head_oid.to_string(),
             head_ref: head_ref.to_string(),
             merged_at: String::new(),
@@ -1291,7 +1227,7 @@ mod tests {
             "tgt": {"id": "R1"}
         }});
         let absorbed = vec!["parked".to_string()];
-        let a = parse_association(&v, &[], &absorbed, &[], false);
+        let a = parse_association(&v, &[], &absorbed, &[]);
         // #90 contains the commit but its head is a stranger's; #91 is open — neither admits.
         assert_eq!(a.merged.iter().map(|p| p.number).collect::<Vec<_>>(), [82]);
         assert!(a.open.is_empty());
@@ -1308,7 +1244,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [("c1_0", "b1_0", 1, "feat"), ("c1_1", "b1_1", 1, "backup")]
         );
-        let q = build_association_query(points.len(), &closed, false);
+        let q = build_association_query(points.len(), &closed);
         assert!(q.starts_with(
             "query($so:String!,$sn:String!,$to:String!,$tn:String!,\
              $p0:GitObjectID!,$p1:GitObjectID!,$b1_0:String!,$b1_1:String!)"
@@ -1322,29 +1258,8 @@ mod tests {
         // With no named point, the target block still carries `id` — never an empty
         // selection set, which GitHub rejects as a parse error.
         let bare = vec![point("aaa", &[])];
-        let q = build_association_query(bare.len(), &closed_aliases(&bare), false);
+        let q = build_association_query(bare.len(), &closed_aliases(&bare));
         assert!(q.contains("tgt:repository(owner:$to,name:$tn){id }"));
-        // The fetched-branch lookup rides the target block behind its own variable.
-        let q = build_association_query(1, &[], true);
-        assert!(q.contains(",$f:String!"));
-        assert!(q.contains("f:pullRequests(headRefName:$f, states:[OPEN,MERGED,CLOSED]"));
-    }
-
-    #[test]
-    fn fetched_nodes_land_raw_for_the_callers_corroboration() {
-        let v = serde_json::json!({"data": {
-            "src": {},
-            "tgt": {"id": "R1", "f": {"nodes": [
-                {"number": 133, "state": "OPEN", "headRefOid": "newer", "headRefName": "claimed",
-                 "createdAt": "2026-07-01T00:00:00Z", "mergedAt": null}
-            ]}}
-        }});
-        let a = parse_association(&v, &[], &[], &[], true);
-        assert_eq!(
-            a.fetched.iter().map(|p| (p.number, p.state.as_str())).collect::<Vec<_>>(),
-            [(133, "OPEN")]
-        );
-        assert!(a.open.is_empty(), "corroboration happens in the caller, not the parser");
     }
 
     #[test]
@@ -1379,7 +1294,7 @@ mod tests {
             }
         }});
         let points = vec![point("p0oid", &[]), point("p1oid", &["old-name"])];
-        let a = parse_association(&v, &points, &[], &closed_aliases(&points), false);
+        let a = parse_association(&v, &points, &[], &closed_aliases(&points));
         // Open #7 appears under both points but lands once; #9 based elsewhere is dropped.
         assert_eq!(a.open.iter().map(|p| p.number).collect::<Vec<_>>(), [7]);
         assert_eq!(a.merged.iter().map(|p| p.number).collect::<Vec<_>>(), [8]);

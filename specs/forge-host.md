@@ -96,7 +96,6 @@ The worktree's published commits nominate pull requests, and containment admits 
 - Several open PRs disambiguate in order: a head equal to the pinned `HEAD`, a head equal to a publication point, the head named by the recorded upstream. A record naming a configured base is tracking, not publication, and never joins the tiebreak. Failing all three, reviewr surfaces the count, never a silent guess.
 - With no open PR, the newest-merged PR containing a publication point shows as historical state.
 - A worktree parked on published base history keeps its epilogue: the absorbed tip still nominates, and a merged PR whose head is exactly that commit resolves as history. Containment proves nothing for an absorbed commit.
-- With nothing provable by commits, an explicitly fetched branch nominates by record: the worktree's for-merge `FETCH_HEAD` entry, which only a branch-targeted fetch writes. Its PR resolves only when the PR head is the fetched commit or provably descends from it locally.
 - A PR closed without merging does not associate. It still resolves as history through exact identity: an `origin` branch tip at a publication point names it, and its reported head equals that point.
 - With none at all, the body says only `No pull request yet. Ready to ship?`
 - A fork PR resolves through the same query: the commits live on the fork (`origin`), and the association carries the base-repository PR. `pr-tab.md` marks the fork case.
@@ -109,7 +108,6 @@ What a user observes:
 - A teammate's PR parked at this worktree's exact `HEAD` never beats the PR on the recorded upstream.
 - A remote branch extending `HEAD` can be a colleague's continuation of this work. Its PR resolves when no better pick exists. The header names the resolved branch, and `sync` shows `behind`.
 - A worktree with no commits beyond the base shows the empty state. A sibling worktree's PR never attaches to it.
-- A worktree reset to an explicitly fetched branch resolves that branch's PR. A bare `git fetch` claims nothing.
 - A reused branch name never resurrects an earlier, unrelated PR. Old PRs do not contain this worktree's commits.
 - The worktree's own merged PR shows as history while the space stays parked on its branch, even after the base absorbs the merge.
 - A rebase discards the old publication points. Between the rebase and its force-push, the tab shows the empty state. The push restores it on the next poll.

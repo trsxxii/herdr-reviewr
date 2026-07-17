@@ -265,10 +265,6 @@ pub struct PrLocalState {
     /// parked on, kept only when no point survives. A merged PR whose head is exactly
     /// one of them still resolves as the epilogue (`specs/forge-host.md`).
     pub absorbed: Vec<String>,
-    /// A branch this worktree explicitly fetched — the for-merge `FETCH_HEAD` entry —
-    /// as `(fetched OID, branch name)`. Read only when no point survives: the record
-    /// nominates, and the fetched commit corroborates (`specs/forge-host.md`).
-    pub fetched: Option<(String, String)>,
     /// The recorded upstream's bare branch name, the last open-PR tiebreak. A record
     /// naming a configured base is tracking, not publication, and is dropped.
     pub upstream: Option<String>,
@@ -293,43 +289,14 @@ pub fn pr_local(
         _ => (Vec::new(), Vec::new()),
     };
     let upstream = recorded_upstream(repo, &branch, base_flag, config_bases)?;
-    let fetched = if points.is_empty() { fetched_branch(repo)? } else { None };
     Ok(PrLocalState {
         head_oid,
         base_oid: bases.into_iter().next(),
         points,
         absorbed,
-        fetched,
         upstream,
         detached: false,
     })
-}
-
-/// The branch this worktree last explicitly fetched: the for-merge `FETCH_HEAD` entry,
-/// which only a branch-targeted `git fetch`/`git pull` writes — a bare `git fetch` marks
-/// every line `not-for-merge` and claims nothing. `FETCH_HEAD` is per-worktree, so the
-/// record belongs to this seat. A missing or unlabeled file is a clean absence.
-fn fetched_branch(repo: &Path) -> Result<Option<(String, String)>, GitFail> {
-    let git_dir = git_strict(repo, &["rev-parse", "--absolute-git-dir"])?;
-    let Ok(content) = std::fs::read_to_string(Path::new(git_dir.trim()).join("FETCH_HEAD")) else {
-        return Ok(None);
-    };
-    for line in content.lines() {
-        let mut fields = line.splitn(3, '\t');
-        let (Some(oid), Some(flag), Some(desc)) = (fields.next(), fields.next(), fields.next())
-        else {
-            continue;
-        };
-        if !flag.trim().is_empty() {
-            continue; // `not-for-merge` — a bare fetch, not an explicit claim
-        }
-        let Some(rest) = desc.strip_prefix("branch '") else { continue };
-        let Some((name, _)) = rest.split_once('\'') else { continue };
-        if !name.is_empty() {
-            return Ok(Some((oid.to_string(), name.to_string())));
-        }
-    }
-    Ok(None)
 }
 
 /// Every resolved base OID in precedence order, deduped: the `--base` flag (verbatim rev
@@ -447,7 +414,7 @@ fn publication_points(
 }
 
 /// Whether `commit` is an ancestor of (or equal to) `of`.
-pub(crate) fn is_ancestor(repo: &Path, commit: &str, of: &str) -> Result<bool, GitFail> {
+fn is_ancestor(repo: &Path, commit: &str, of: &str) -> Result<bool, GitFail> {
     Ok(git_tristate(repo, &["merge-base", "--is-ancestor", commit, of])?.is_some())
 }
 
@@ -526,11 +493,6 @@ fn recorded_upstream(
     let names_a_base = config_bases.iter().any(|entry| entry == name)
         || base_flag.is_some_and(|flag| crate::config::canonical_base(flag) == name);
     Ok((!name.is_empty() && !names_a_base).then(|| name.to_string()))
-}
-
-/// Whether `oid` exists in the local object database. Exit 1 is a clean absence.
-pub(crate) fn oid_known(repo: &Path, oid: &str) -> Result<bool, GitFail> {
-    Ok(git_tristate(repo, &["cat-file", "-e", oid])?.is_some())
 }
 
 /// Commits `local` (the pinned `HEAD` OID) is ahead and behind `other` (the PR head OID).
