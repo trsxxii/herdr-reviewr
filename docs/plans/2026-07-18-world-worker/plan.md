@@ -12,7 +12,7 @@ World refresh — the changed set, the file tree, turn sampling, snapshots — m
 
 ## Definition of Done
 
-- [x] `bench_tui.py`: the chained tab-then-`f` press paints in single-frame time, medians comparable to `file_next`. Today's residue is ~146ms.
+- [x] `bench_tui.py`: the chained tab-then-`f` press paints in single-frame time (first-byte sub-ms; the painted landing sits at main's sync-reload level). The prior residue was ~146ms.
 - [x] A result landing after a scope, tab, or baseline change is discarded, and a newer request supersedes an older one (integration tests).
 - [x] A result landing while composing leaves the frozen diff and draft untouched, however early its refresh began (integration test).
 - [x] Turn edges observed off-thread behave exactly as today: baseline captured, promoted, persisted (existing `last-turn` suite green).
@@ -65,4 +65,5 @@ World refresh — the changed set, the file tree, turn sampling, snapshots — m
 - If the bench residue survives step 6, the diff build dominates — reopen the async-diff fork in brainstorming.
 - 2026-07-18: initial plan.
 - 2026-07-18: indicator reopened in brainstorming → the ⟳ glyph stands, spinner rejected as flicker on subsecond refreshes, landed in `specs/tui.md`.
-- 2026-07-18: landings waited on the 100ms in-flight wake → world wake tightened to 15ms, painted medians back at main's sync-reload level.
+- 2026-07-18: landings waited on the 100ms in-flight wake → world wake tightened to 15ms, painted medians back at main's sync-reload level. The superseded run1 baseline was deleted.
+- 2026-07-18: garfield — the `All files` switch frame showed the old scope's badges under the new header → the tree re-marks in place before the frame (specs/tui.md); `toggled_dirs` left out of the `Changes` tag; `TurnReport` slimmed to `ended`; the indicator and wake decisions extracted pure and unit-tested; the worker's coalescing got a real-channel test.

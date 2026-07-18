@@ -129,11 +129,10 @@ pub struct TurnHost {
 }
 
 /// One sample's outcome, sent back with the completion: whether it ended a turn (the `PR`
-/// tab's refetch signal) and the baseline after the sample.
+/// tab's refetch signal). The baseline itself rides the completion's input.
 #[derive(Clone, Debug)]
 pub struct TurnReport {
     pub ended: bool,
-    pub baseline: Option<String>,
 }
 
 impl TurnHost {
@@ -161,7 +160,7 @@ impl TurnHost {
     /// once the worktree diverges from it, persisting the new baseline. Git errors only
     /// log, so a transient git failure never crashes the poll.
     pub fn observe(&mut self, status: Option<Status>) -> TurnReport {
-        let Some(status) = status else { return self.report(false) };
+        let Some(status) = status else { return TurnReport { ended: false } };
         let transition = self.tracker.observe(status);
         if transition.started {
             match git::snapshot_worktree(&self.repo) {
@@ -172,7 +171,7 @@ impl TurnHost {
         // Promote the pending candidate once the turn has changed a file. Compare full
         // snapshots so a new untracked file counts as a change (specs/herdr-host.md).
         let Some(candidate) = self.tracker.candidate().map(str::to_string) else {
-            return self.report(transition.ended);
+            return TurnReport { ended: transition.ended };
         };
         match git::snapshot_worktree(&self.repo) {
             Ok(now) if now != candidate => {
@@ -184,11 +183,7 @@ impl TurnHost {
             Ok(_) => {}
             Err(e) => logln!("turn divergence check failed: {e}"),
         }
-        self.report(transition.ended)
-    }
-
-    fn report(&self, ended: bool) -> TurnReport {
-        TurnReport { ended, baseline: self.tracker.baseline().map(str::to_string) }
+        TurnReport { ended: transition.ended }
     }
 }
 
@@ -215,8 +210,9 @@ pub struct WorldJob {
     pub reveal: bool,
 }
 
-/// A finished job: the tag it was built for, the sample's outcome, and the snapshot —
-/// `None` when the input's tab builds no file tree (the `PR` tab).
+/// A finished job: the tag it was built for, the sample's outcome (`None` when the job
+/// didn't sample — a tab entry or `r`, not a poll), and the snapshot — `None` when the
+/// input's tab builds no file tree (the `PR` tab).
 #[derive(Debug)]
 pub struct WorldCompletion {
     pub generation: u64,

@@ -685,7 +685,13 @@ impl App {
             base: self.base.clone(),
             base_branches: self.config_snapshot().base_branches().to_vec(),
             turn_baseline: self.turn_baseline.clone(),
-            toggled_dirs: self.toggled_dirs.clone(),
+            // `Changes` never reads the toggled set, so it stays out of that tab's tag —
+            // a directory toggle there must not invalidate an in-flight build.
+            toggled_dirs: if self.tab == Tab::AllFiles {
+                self.toggled_dirs.clone()
+            } else {
+                HashSet::new()
+            },
         }
     }
 
@@ -1366,6 +1372,14 @@ impl App {
                 // The tree's annotations refresh behind it via the worker (specs/tui.md).
                 let changed = crate::world::build_changed(&self.world_input())?;
                 self.changed = crate::world::annotate(&changed);
+                // Re-mark the tree in place — the rows are scope-independent, only their
+                // badges move, so the switch frame never shows the old scope's badges
+                // under the new scope's header (policies/ux-responsiveness.md). The tree
+                // itself still refreshes behind the switch.
+                for entry in &mut self.entries {
+                    entry.annotation = self.changed.get(&entry.path).cloned();
+                }
+                self.rebuild_file_rows();
                 self.request_world_refresh(false, false);
             }
             // An explicit switch reveals the cursor (a poll does not).
@@ -1416,7 +1430,7 @@ impl App {
 
     /// An empty read pane — a first visit landing on a collapsed tree, or an open file gone
     /// empty — focuses the tree, so the cursor keys aren't trapped on a pane with nothing to
-    /// move (specs/tui.md). Runs on the switch frame and again after its deferred reload.
+    /// move (specs/tui.md). Runs on the switch frame and again when its world refresh lands.
     pub(crate) fn settle_tab_entry(&mut self) {
         if self.visible.is_empty() {
             self.focus = Focus::Files;

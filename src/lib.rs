@@ -427,7 +427,8 @@ impl PrRefresh {
 /// refetch regardless of the tag; the snapshot reconciles only when the completion carries
 /// the live generation and its input still matches the view — a mismatched snapshot is
 /// discarded whole and a fresh refresh queued (specs/tui.md). Returns whether the
-/// completion matched the live generation, clearing the in-flight marker.
+/// completion matched the live generation — the caller clears the in-flight marker on
+/// `true`.
 pub fn land_world_completion(
     app: &mut App,
     completion: crate::world::WorldCompletion,
@@ -468,6 +469,18 @@ pub fn land_world_completion(
         None => {}
     }
     true
+}
+
+/// Whether a file tab's in-flight refresh shows the tab-strip glyph: past the delay, and
+/// only for a job that builds a snapshot — a sample-only job never lights it (specs/tui.md).
+fn world_indicator(inflight: Option<(Duration, bool)>) -> bool {
+    inflight.is_some_and(|(elapsed, builds)| builds && elapsed >= PR_LOADING_DELAY)
+}
+
+/// The wake while a world job is in flight: tight for a building job so its landing paints
+/// near the build's own speed, the fetch cadence for a sample-only one.
+fn world_wake(builds: bool) -> Duration {
+    Duration::from_millis(if builds { 15 } else { 100 })
 }
 
 /// Draw, then wait up to the poll deadline for input; refresh on each tick.
@@ -548,9 +561,7 @@ fn event_loop(
             app.refresh_indicator = if app.tab == crate::app::Tab::Pr {
                 app.pr_refreshing()
             } else {
-                world_inflight.is_some_and(|(started, builds)| {
-                    builds && started.elapsed() >= PR_LOADING_DELAY
-                })
+                world_indicator(world_inflight.map(|(started, builds)| (started.elapsed(), builds)))
             };
             // Expire a stale status line: restart the timer when the message changes, and clear
             // it once it has lingered past the TTL, so a notification doesn't stay up forever.
@@ -735,7 +746,7 @@ fn event_loop(
                 timeout = timeout.min(Duration::from_millis(100));
             }
             if let Some((_, builds)) = world_inflight {
-                timeout = timeout.min(Duration::from_millis(if builds { 15 } else { 100 }));
+                timeout = timeout.min(world_wake(builds));
             }
             if let Some(started) = pr.wait_started {
                 timeout = timeout.min(PR_LOADING_DELAY.saturating_sub(started.elapsed()));
@@ -1358,9 +1369,32 @@ mod refresh_tests {
     use super::{
         ActiveFetch, PaintedFrameSnapshot, PrCoordinator, PrEffect, PrRefresh, TaggedPr,
         apply_plugin_config_observation, apply_pr_probe_result, drain_pr_shutdown,
-        handle_blocked_event, handle_resize, ready_app, schedule_poll_probe,
+        handle_blocked_event, handle_resize, ready_app, schedule_poll_probe, world_indicator,
+        world_wake,
     };
     use crate::app::{App, Tab};
+
+    #[test]
+    fn the_indicator_lights_only_for_a_building_job_past_the_delay() {
+        use std::time::Duration;
+        assert!(!world_indicator(None), "nothing in flight, nothing lit");
+        assert!(
+            !world_indicator(Some((Duration::from_millis(300), false))),
+            "sample-only jobs never light it"
+        );
+        assert!(!world_indicator(Some((Duration::from_millis(100), true))), "below the delay");
+        assert!(
+            world_indicator(Some((Duration::from_millis(150), true))),
+            "a building job past the delay lights it"
+        );
+    }
+
+    #[test]
+    fn the_in_flight_wake_is_tight_only_for_a_building_job() {
+        use std::time::Duration;
+        assert_eq!(world_wake(true), Duration::from_millis(15));
+        assert_eq!(world_wake(false), Duration::from_millis(100));
+    }
     use crate::config::{Config, plugin_config_in};
     use crate::forge::{PrFetchInput, PrView};
     use crate::git::RepositoryIdentity;

@@ -3207,8 +3207,7 @@ fn a_superseded_completion_syncs_the_baseline_but_paints_nothing() {
     r.write("d.rs", "d\n");
     let mut stale = completion_for(&app, 3);
     stale.input.turn_baseline = Some("cafe".into());
-    stale.turn =
-        Some(herdr_reviewr::world::TurnReport { ended: true, baseline: Some("cafe".into()) });
+    stale.turn = Some(herdr_reviewr::world::TurnReport { ended: true });
     let before = app.entries.clone();
     assert!(
         !herdr_reviewr::land_world_completion(&mut app, stale, 4),
@@ -3281,4 +3280,30 @@ fn a_superseded_reveal_rearms_for_the_next_dispatch() {
     );
     let request = app.world_request.expect("the undelivered reveal re-arms a refresh");
     assert!(request.reveal, "the reveal rides the next dispatch instead of dying");
+}
+
+#[test]
+fn the_worker_coalesces_queued_jobs_keeping_their_flags() {
+    use herdr_reviewr::world::{self, TurnHost, WorldJob};
+    use std::sync::mpsc;
+    let dir = tempfile::tempdir().unwrap();
+    let (job_tx, job_rx) = mpsc::channel();
+    let (res_tx, res_rx) = mpsc::channel();
+    let input = App::new(dir.path().to_path_buf(), Scope::Uncommitted, None).world_input();
+    let mut newer = input.clone();
+    newer.scope = Scope::Branch;
+    // Both jobs queue before the worker starts, so the coalescing path is deterministic.
+    job_tx.send(WorldJob { generation: 1, input, sample_turn: true, reveal: false }).unwrap();
+    job_tx
+        .send(WorldJob { generation: 2, input: newer, sample_turn: false, reveal: true })
+        .unwrap();
+    let worker = world::spawn(TurnHost::open(dir.path().to_path_buf()), job_rx, res_tx);
+    let completion = res_rx.recv().expect("one coalesced completion");
+    assert_eq!(completion.generation, 2, "the latest request wins");
+    assert_eq!(completion.input.scope, Scope::Branch, "the newest input is the one built");
+    assert!(completion.turn.is_some(), "the superseded job's sample still runs");
+    assert!(completion.reveal, "the superseded job's reveal is kept by OR");
+    drop(job_tx);
+    assert!(res_rx.recv().is_err(), "exactly one completion lands for the coalesced pair");
+    worker.join().unwrap();
 }
