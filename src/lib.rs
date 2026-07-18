@@ -320,7 +320,7 @@ fn schedule_poll_probe(pr: &mut PrCoordinator, tab: crate::app::Tab) {
 enum ConfigGate {
     Blocked,
     Unchanged,
-    Changed { file_reloaded: bool, pr_changed: bool },
+    Changed { pr_changed: bool },
 }
 
 impl ConfigGate {
@@ -440,6 +440,11 @@ pub fn land_world_completion(
         app.pr_pending = true;
     }
     if completion.generation != generation {
+        // A superseding job carries reveal=false, so a superseded switch's reveal would
+        // die here; re-arm it to ride the next dispatch instead (specs/tui.md).
+        if completion.reveal {
+            app.request_world_refresh(false, true);
+        }
         return false;
     }
     match completion.snapshot {
@@ -454,8 +459,9 @@ pub fn land_world_completion(
                 app.reveal_files = true;
             }
         }
-        // The view moved on while the build ran: discard whole, refresh again.
-        Some(Ok(_)) => app.request_world_refresh(false, false),
+        // The view moved on while the build ran: discard whole, refresh again, keeping
+        // an undelivered reveal alive.
+        Some(Ok(_)) => app.request_world_refresh(false, completion.reveal),
         // A failed refresh reports and keeps the stale frame — the same contract as a
         // failed poll (specs/tui.md).
         Some(Err(e)) => app.status = format!("refresh failed: {e}"),
@@ -492,7 +498,7 @@ fn event_loop(
         world_res_tx,
     );
     let mut world_generation = 0_u64;
-    let mut world_inflight: Option<Instant> = None;
+    let mut world_inflight: Option<(Instant, bool)> = None;
     let mut config_epoch = 0_u64;
     let mut status_at = Instant::now();
     let mut last_status = String::new();
@@ -542,7 +548,9 @@ fn event_loop(
             app.refresh_indicator = if app.tab == crate::app::Tab::Pr {
                 app.pr_refreshing()
             } else {
-                world_inflight.is_some_and(|started| started.elapsed() >= PR_LOADING_DELAY)
+                world_inflight.is_some_and(|(started, builds)| {
+                    builds && started.elapsed() >= PR_LOADING_DELAY
+                })
             };
             // Expire a stale status line: restart the timer when the message changes, and clear
             // it once it has lingered past the TTL, so a notification doesn't stay up forever.
@@ -592,18 +600,26 @@ fn event_loop(
 
             // Dispatch the queued refresh after the frame above painted, so a switch stays
             // instant and the fresh state lands behind it (specs/tui.md).
-            if app.world_pending && app.config_error().is_none() {
-                app.world_pending = false;
-                let sample_turn = std::mem::take(&mut app.world_sample);
-                let reveal = std::mem::take(&mut app.world_reveal);
+            if app.world_request.is_some() && app.config_error().is_none() {
+                let request = app.world_request.take().expect("checked above");
                 world_generation = world_generation.wrapping_add(1);
-                world_inflight = Some(Instant::now());
-                let _ = world_tx.send(crate::world::WorldJob {
+                let job = crate::world::WorldJob {
                     generation: world_generation,
                     input: app.world_input(),
-                    sample_turn,
-                    reveal,
-                });
+                    sample_turn: request.sample,
+                    reveal: request.reveal,
+                };
+                // A sample-only job (the `PR` tab's poll) builds no snapshot: it neither
+                // lights the file tabs' glyph nor deserves the tight landing wake.
+                let builds = job.input.tab.is_file_tab();
+                world_inflight = if world_tx.send(job).is_ok() {
+                    Some((Instant::now(), builds))
+                } else {
+                    // A dead worker must not pin the in-flight marker (and its glyph and
+                    // tight wake) for the rest of the session.
+                    app.status = "refresh worker unavailable".to_string();
+                    None
+                };
             }
 
             // Record user and fallback refreshes before consuming worker results. A trigger that
@@ -718,8 +734,8 @@ fn event_loop(
             if pr.active_fetch.is_some() || pr.active_probe_epoch.is_some() {
                 timeout = timeout.min(Duration::from_millis(100));
             }
-            if world_inflight.is_some() {
-                timeout = timeout.min(Duration::from_millis(15));
+            if let Some((_, builds)) = world_inflight {
+                timeout = timeout.min(Duration::from_millis(if builds { 15 } else { 100 }));
             }
             if let Some(started) = pr.wait_started {
                 timeout = timeout.min(PR_LOADING_DELAY.saturating_sub(started.elapsed()));
@@ -933,7 +949,7 @@ fn reconcile_plugin_config(
             app.status = format!("config refresh failed: {error}");
         }
     }
-    ConfigGate::Changed { file_reloaded: file_changed, pr_changed }
+    ConfigGate::Changed { pr_changed }
 }
 
 /// Observe one complete config snapshot. Invalid state blocks work. Recovery loads a fresh app on

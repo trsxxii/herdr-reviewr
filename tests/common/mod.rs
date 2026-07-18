@@ -135,7 +135,5 @@ pub fn enter_tab(app: &mut App, tab: herdr_reviewr::app::Tab) {
 pub fn land_world(app: &mut App) {
     let snapshot = herdr_reviewr::world::build(&app.world_input()).unwrap();
     app.reconcile_world(snapshot);
-    app.world_pending = false;
-    app.world_sample = false;
-    app.world_reveal = false;
+    app.world_request = None;
 }

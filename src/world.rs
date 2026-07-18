@@ -43,9 +43,13 @@ pub struct WorldSnapshot {
 /// worktree. In `last-turn` with no baseline yet, the changeset is empty until a turn
 /// start is observed (specs/review-model.md).
 pub fn build(input: &WorldInput) -> Result<WorldSnapshot> {
+    // Outside a git repo, an empty snapshot paints the quiet empty state rather than a
+    // failing status line every poll (specs/herdr-host.md).
+    if !git::is_repo(&input.repo) {
+        return Ok(WorldSnapshot { changed: HashMap::new(), entries: Vec::new() });
+    }
     let changed = build_changed(input)?;
-    let changed_map: HashMap<String, Annotation> =
-        changed.iter().map(|f| (f.path.clone(), Annotation::from(f))).collect();
+    let changed_map = annotate(&changed);
     let entries = match input.tab {
         // The whole worktree (ignored included), with expanded ignored dirs loaded lazily.
         Tab::AllFiles => all_files_entries(input, &changed_map)?,
@@ -58,6 +62,9 @@ pub fn build(input: &WorldInput) -> Result<WorldSnapshot> {
 /// The active scope's changed files alone — the piece a scope switch rebuilds before its
 /// frame, so the header count and list never wear another scope's label (specs/tui.md).
 pub fn build_changed(input: &WorldInput) -> Result<Vec<ChangedFile>> {
+    if !git::is_repo(&input.repo) {
+        return Ok(Vec::new());
+    }
     match input.scope {
         Scope::LastTurn => match input.turn_baseline.as_deref() {
             Some(t) => git::changed_against_tree(&input.repo, t),
@@ -70,6 +77,18 @@ pub fn build_changed(input: &WorldInput) -> Result<Vec<ChangedFile>> {
             &input.base_branches,
         ),
     }
+}
+
+/// The changed-files map every consumer keys by path — one construction site, shared by
+/// the worker build and the scope switch's synchronous rebuild.
+pub fn annotate(changed: &[ChangedFile]) -> HashMap<String, Annotation> {
+    changed.iter().map(|f| (f.path.clone(), Annotation::from(f))).collect()
+}
+
+/// The persisted turn baseline for `repo`, if any — the one seeding rule, shared by the
+/// worker's tracker and the app's first-frame mirror (specs/herdr-host.md).
+pub fn seed_baseline(repo: &std::path::Path) -> Option<String> {
+    git::read_baseline_ref(repo, &git::worktree_key(repo))
 }
 
 /// The `All files` entries: every worktree path (ignored dimmed), with the children of
@@ -121,8 +140,8 @@ impl TurnHost {
     /// Resume any persisted turn baseline for this worktree, so `last-turn` keeps its
     /// anchor across a sidebar restart (specs/herdr-host.md).
     pub fn open(repo: PathBuf) -> Self {
+        let tracker = TurnTracker::with_baseline(seed_baseline(&repo));
         let turn_key = git::worktree_key(&repo);
-        let tracker = TurnTracker::with_baseline(git::read_baseline_ref(&repo, &turn_key));
         Self { tracker, repo, turn_key }
     }
 
@@ -171,6 +190,15 @@ impl TurnHost {
     fn report(&self, ended: bool) -> TurnReport {
         TurnReport { ended, baseline: self.tracker.baseline().map(str::to_string) }
     }
+}
+
+/// One queued refresh's attributes, accumulated on `App` until the loop dispatches it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WorldRequest {
+    /// Sample the agent's status — set by the poll alone (specs/tui.md).
+    pub sample: bool,
+    /// Re-reveal the cursor when the result lands — user-initiated switches only.
+    pub reveal: bool,
 }
 
 /// One refresh request. The worker builds against `input`, refreshing its `turn_baseline`

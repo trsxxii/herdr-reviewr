@@ -291,14 +291,9 @@ pub struct App {
     /// Set when the PR view needs a (re)fetch; the event loop services it after drawing, so a
     /// `loading` frame shows before the blocking `gh` calls run.
     pub pr_pending: bool,
-    /// A world refresh request awaiting dispatch; the event loop hands it to the worker
-    /// after the frame paints (specs/tui.md).
-    pub world_pending: bool,
-    /// Whether the pending request samples the agent's status — set by the poll alone.
-    pub world_sample: bool,
-    /// Whether the pending request re-reveals the cursor when its result lands — set by a
-    /// user-initiated switch, never by a poll.
-    pub world_reveal: bool,
+    /// The world refresh request awaiting dispatch, if any; the event loop hands it to
+    /// the worker after the frame paints (specs/tui.md).
+    pub world_request: Option<crate::world::WorldRequest>,
     /// Whether the active tab's refresh has been in flight past the indicator delay —
     /// drives the tab-strip glyph, maintained by the event loop (specs/tui.md).
     pub refresh_indicator: bool,
@@ -355,8 +350,7 @@ impl App {
         // Mirror any persisted turn baseline for this worktree, so `last-turn` keeps its
         // anchor across a sidebar restart. The worker's `TurnHost` owns the tracker; this
         // mirror follows its completions (specs/herdr-host.md).
-        let turn_baseline =
-            if load_turn { git::read_baseline_ref(&repo, &git::worktree_key(&repo)) } else { None };
+        let turn_baseline = if load_turn { crate::world::seed_baseline(&repo) } else { None };
         let theme = theme::resolve(None);
         Self {
             repo,
@@ -414,9 +408,7 @@ impl App {
             pr_nav_max_scroll: std::cell::Cell::new(usize::MAX),
             reveal_pr_nav: std::cell::Cell::new(true),
             pr_pending: false,
-            world_pending: false,
-            world_sample: false,
-            world_reveal: false,
+            world_request: None,
             refresh_indicator: false,
             tab_visited: false,
             highlighter: Highlighter::new(theme.syntax),
@@ -514,9 +506,7 @@ impl App {
         // A tab switch requested its refresh and recovery landed first: the carried fields
         // below may reinstate the stale stashed frame, so the pending request must survive
         // the swap or that frame never refreshes until the next poll.
-        self.world_pending = old.world_pending;
-        self.world_sample = old.world_sample;
-        self.world_reveal = old.world_reveal;
+        self.world_request = old.world_request.take();
         let old_mode = old.mode.clone();
         match old_mode {
             Mode::Normal => {}
@@ -935,9 +925,9 @@ impl App {
     /// `sample` rides the poll's status sample along; `reveal` re-reveals the cursor when
     /// the result lands, for user-initiated switches only (specs/tui.md).
     pub fn request_world_refresh(&mut self, sample: bool, reveal: bool) {
-        self.world_pending = true;
-        self.world_sample |= sample;
-        self.world_reveal |= reveal;
+        let request = self.world_request.get_or_insert(crate::world::WorldRequest::default());
+        request.sample |= sample;
+        request.reveal |= reveal;
     }
 
     /// Snap the diff view back to the top, clearing any pending selection.
@@ -1375,8 +1365,7 @@ impl App {
                 // `All files` keeps its tree; only the changed set rebuilds before the frame.
                 // The tree's annotations refresh behind it via the worker (specs/tui.md).
                 let changed = crate::world::build_changed(&self.world_input())?;
-                self.changed =
-                    changed.iter().map(|f| (f.path.clone(), Annotation::from(f))).collect();
+                self.changed = crate::world::annotate(&changed);
                 self.request_world_refresh(false, false);
             }
             // An explicit switch reveals the cursor (a poll does not).
@@ -2856,9 +2845,9 @@ mod tests {
         old.request_world_refresh(true, true);
         let mut recovered = App::new(PathBuf::from("."), Scope::Uncommitted, None);
         recovered.carry_authored_state_from(&mut old);
-        assert!(recovered.world_pending, "the pending refresh survives the recovery swap");
-        assert!(recovered.world_sample, "the poll's sample flag survives the recovery swap");
-        assert!(recovered.world_reveal, "the switch's reveal flag survives the recovery swap");
+        let request = recovered.world_request.expect("the pending refresh survives the swap");
+        assert!(request.sample, "the poll's sample flag survives the recovery swap");
+        assert!(request.reveal, "the switch's reveal flag survives the recovery swap");
     }
 
     #[test]

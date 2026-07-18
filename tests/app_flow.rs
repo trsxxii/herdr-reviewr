@@ -2069,7 +2069,7 @@ fn a_tab_switch_paints_the_stashed_frame_and_requests_its_refresh() {
     // A first visit has no stash to paint, so it loads before its frame
     // (policies/ux-responsiveness.md): no pending request survives the switch.
     app.set_tab(Tab::AllFiles).unwrap();
-    assert!(!app.world_pending, "a first visit loads synchronously");
+    assert!(app.world_request.is_none(), "a first visit loads synchronously");
     assert!(app.entries.iter().any(|e| e.path == "a.rs"), "the first frame is populated");
 
     // A return visit paints the stashed frame as it was and requests its refresh
@@ -2077,8 +2077,8 @@ fn a_tab_switch_paints_the_stashed_frame_and_requests_its_refresh() {
     enter_tab(&mut app, Tab::Changes);
     r.write("b.rs", "fn b() {}\n");
     app.set_tab(Tab::AllFiles).unwrap();
-    assert!(app.world_pending, "a return visit requests its refresh");
-    assert!(app.world_reveal, "the landing will re-reveal the re-anchored cursor");
+    let request = app.world_request.expect("a return visit requests its refresh");
+    assert!(request.reveal, "the landing will re-reveal the re-anchored cursor");
     assert!(
         !app.entries.iter().any(|e| e.path == "b.rs"),
         "the switch frame is the stash, not the current worktree"
@@ -2219,7 +2219,7 @@ fn switching_scope_on_all_files_remarks_in_place() {
     app.set_scope(Scope::Branch).unwrap();
     assert_eq!(app.file_cursor, cursor, "the cursor holds across a scope re-mark");
     assert_eq!(app.changed_count(), 2, "branch marks both the committed and the dirty file");
-    assert!(app.world_pending, "the tree's annotations refresh behind the switch");
+    assert!(app.world_request.is_some(), "the tree's annotations refresh behind the switch");
     common::land_world(&mut app);
     assert_eq!(app.file_cursor, cursor, "the cursor still holds after the landing");
     assert!(matches!(annotation_of(&app, "a.rs"), Some(Some(_))), "a.rs stays marked");
@@ -3197,7 +3197,7 @@ fn a_result_for_a_view_that_moved_on_is_discarded_whole() {
         "the live generation clears the in-flight marker even when the view moved on"
     );
     assert_eq!(app.entries, before, "the mismatched snapshot never paints");
-    assert!(app.world_pending, "a fresh refresh is queued for the current view");
+    assert!(app.world_request.is_some(), "a fresh refresh is queued for the current view");
 }
 
 #[test]
@@ -3258,4 +3258,27 @@ fn a_reveal_completion_settles_the_tab_and_rearms_the_cursor_reveal() {
     assert!(herdr_reviewr::land_world_completion(&mut app, landing, 2));
     assert!(app.reveal_files, "a switch-originated landing re-reveals the re-anchored cursor");
     assert!(app.entries.iter().any(|f| f.path == "c.rs"), "the landing caught up");
+}
+
+#[test]
+fn outside_a_repo_the_build_yields_the_quiet_empty_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::new(dir.path().to_path_buf(), Scope::Uncommitted, None);
+    let snapshot = herdr_reviewr::world::build(&app.world_input()).unwrap();
+    assert!(snapshot.entries.is_empty(), "no error, no entries — the empty state stays quiet");
+    assert!(herdr_reviewr::world::build_changed(&app.world_input()).unwrap().is_empty());
+}
+
+#[test]
+fn a_superseded_reveal_rearms_for_the_next_dispatch() {
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    let mut superseded = completion_for(&app, 3);
+    superseded.reveal = true;
+    assert!(
+        !herdr_reviewr::land_world_completion(&mut app, superseded, 4),
+        "the stale tag does not clear the live marker"
+    );
+    let request = app.world_request.expect("the undelivered reveal re-arms a refresh");
+    assert!(request.reveal, "the reveal rides the next dispatch instead of dying");
 }

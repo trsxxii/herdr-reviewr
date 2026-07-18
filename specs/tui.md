@@ -69,7 +69,7 @@ Every layout change preserves the focused pane and each pane's cursor or selecti
 ### Refresh
 
 - The view polls the worktree every `N` seconds, default 2, configurable.
-- A poll refreshes the file list and the open diff off the frame loop. The result reconciles into the view, keeping the selected file and scroll where the file still exists.
+- A poll rebuilds the changed set and the file tree off the frame loop. The result reconciles into the view, keeping the selected file and scroll where the file still exists, and refreshes the open diff as it lands.
 - A result lands whole: the header counts and the list they head come from one refresh.
 - A result lands only when the view it described is still current: the same repository, tab, scope, and scope base. The scope base is the branch base or the turn baseline. A result that no longer matches is discarded, and a newer request supersedes an older one.
 - Entering a file tab paints the tab's stashed state in the switch frame, exactly as it was left. A refresh lands behind it — stale until it lands, never wrong (`overview.md` Continuity). A first-ever visit has no stash to paint and loads before its frame, so the header never describes a tab that shows nothing.
