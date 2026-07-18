@@ -90,6 +90,9 @@ struct TabStash {
     preview_scroll: usize,
     preview_scrolled: bool,
     preview_text: String,
+    /// Whether this tab has ever completed a reload. A never-visited tab has nothing worth
+    /// painting, so its first entry loads before the frame instead of deferring.
+    visited: bool,
 }
 
 /// A file crossing offered by the footer, waiting for the hunk step that armed it to repeat: the
@@ -292,6 +295,9 @@ pub struct App {
     /// A file-tab switch painted its stashed frame and deferred the reload; the event loop
     /// services it via [`Self::service_reload`] right after that frame (specs/tui.md).
     pub reload_pending: bool,
+    /// Whether the active file tab has ever completed a reload (stash counterpart:
+    /// `TabStash::visited`). Gates the first-visit synchronous load in [`Self::set_tab`].
+    tab_visited: bool,
     highlighter: Highlighter,
     /// The active palette every renderer paints from (`specs/theme.md`).
     palette: Palette,
@@ -406,6 +412,7 @@ impl App {
             reveal_pr_nav: std::cell::Cell::new(true),
             pr_pending: false,
             reload_pending: false,
+            tab_visited: false,
             highlighter: Highlighter::new(theme.syntax),
             palette: theme.palette,
             theme_name: theme.name,
@@ -499,6 +506,10 @@ impl App {
         self.list_cursor = old.list_cursor;
         self.navigator_side_pct = old.navigator_side_pct;
         self.navigator_stack_pct = old.navigator_stack_pct;
+        // A tab switch deferred its reload and recovery landed first: the carried fields
+        // below may reinstate the stale stashed frame, so the pending reload must survive
+        // the swap or that frame never refreshes until the next poll.
+        self.reload_pending = old.reload_pending;
         let old_mode = old.mode.clone();
         match old_mode {
             Mode::Normal => {}
@@ -738,6 +749,7 @@ impl App {
             }
             self.load_read();
         }
+        self.tab_visited = true;
         Ok(())
     }
 
@@ -1444,29 +1456,42 @@ impl App {
             self.active_file_tab = tab;
         }
         self.reload_pending = true;
-        // An empty read pane — a first visit landing on a collapsed tree, or an open file gone
-        // empty — focuses the tree, so the cursor keys aren't trapped on a pane with nothing to
-        // move (specs/tui.md).
-        if self.visible.is_empty() {
-            self.focus = Focus::Files;
+        // A first visit has no stash to paint: deferring would show an empty tree under a
+        // live changed-count for a frame, a header/body disagreement
+        // (policies/ux-responsiveness.md). Load it before the frame instead; every return
+        // visit paints its stash instantly and refreshes behind it. The visited marker,
+        // not emptiness — a clean repo's `Changes` tab is legitimately empty.
+        if !self.tab_visited {
+            self.service_reload()?;
         }
+        self.settle_tab_entry();
         self.reveal_files = true; // pull the restored cursor back into view
         Ok(())
     }
 
     /// Run the reload a tab switch deferred past its paint. The event loop calls this after the
     /// switch frame draws; a repaint follows before input, so the fresh state is one frame
-    /// behind the instant one. Re-checks the empty-pane focus because the reload may have
-    /// emptied or filled the read pane the switch frame showed.
+    /// behind the instant one. Re-settles focus and the cursor reveal because the reload may
+    /// have moved the cursor or emptied the pane the switch frame showed.
     pub fn service_reload(&mut self) -> Result<()> {
         if !std::mem::take(&mut self.reload_pending) {
             return Ok(());
         }
         self.reload()?;
+        self.settle_tab_entry();
+        // The switch frame revealed the stashed cursor; the reload may have re-anchored it
+        // onto a different row, so reveal again against the fresh rows.
+        self.reveal_files = true;
+        Ok(())
+    }
+
+    /// An empty read pane — a first visit landing on a collapsed tree, or an open file gone
+    /// empty — focuses the tree, so the cursor keys aren't trapped on a pane with nothing to
+    /// move (specs/tui.md). Runs on the switch frame and again after its deferred reload.
+    fn settle_tab_entry(&mut self) {
         if self.visible.is_empty() {
             self.focus = Focus::Files;
         }
-        Ok(())
     }
 
     // ---- PR tab (specs/forge-host.md, specs/tui.md) -------------------------------------
@@ -1669,6 +1694,7 @@ impl App {
         std::mem::swap(&mut self.preview_scroll, &mut self.stash.preview_scroll);
         std::mem::swap(&mut self.preview_text, &mut self.stash.preview_text);
         std::mem::swap(&mut self.preview_scrolled, &mut self.stash.preview_scrolled);
+        std::mem::swap(&mut self.tab_visited, &mut self.stash.visited);
     }
 
     pub fn toggle_focus(&mut self) {
@@ -2879,6 +2905,18 @@ mod tests {
         assert_eq!(recovered.diff_cursor, 8);
         assert_eq!(recovered.diff_scroll, 5);
         assert_eq!(recovered.input, "unsent");
+    }
+
+    #[test]
+    fn config_recovery_carries_a_pending_reload() {
+        // A tab switch deferred its reload, then recovery landed first: the carried flag is
+        // what makes the recovered app service that reload instead of keeping the stale
+        // stashed frame until the next poll.
+        let mut old = App::blocked(PathBuf::from("."), Scope::Uncommitted, None);
+        old.reload_pending = true;
+        let mut recovered = App::new(PathBuf::from("."), Scope::Uncommitted, None);
+        recovered.carry_authored_state_from(&mut old);
+        assert!(recovered.reload_pending, "the deferred reload survives the recovery swap");
     }
 
     #[test]

@@ -660,24 +660,19 @@ pub struct WorktreeEntry {
     pub is_dir: bool,
 }
 
-/// Every entry in the worktree for the `All files` tab (specs/file-list.md): tracked files
-/// (`git ls-files`), untracked-not-ignored files, and the ignored entries from
-/// `git status --ignored` — a wholly-ignored directory collapsed to one `is_dir` placeholder,
-/// an individually-ignored file as itself. `.git` is never reported. Deduped and sorted; `-z`
-/// keeps paths with spaces or special characters verbatim.
+/// Every entry in the worktree for the `All files` tab (specs/file-list.md): tracked and
+/// untracked-not-ignored files from one `ls-files --cached --others` pass, and the ignored
+/// entries from [`ignored_entries`] — a wholly-ignored directory collapsed to one `is_dir`
+/// placeholder, an individually-ignored file as itself. `.git` is never reported. Deduped and
+/// sorted; `-z` keeps paths with spaces or special characters verbatim.
 pub fn all_files(repo: &Path) -> Result<Vec<WorktreeEntry>> {
-    let tracked = git(repo, &["ls-files", "-z"])?;
+    // One spawn for tracked + untracked. `--others --exclude-standard` applies the same
+    // standard exclude rules as the `status` untracked pass `changed_files` runs, so the
+    // untracked sets match without a status walk.
+    let listed = git(repo, &["ls-files", "--cached", "--others", "--exclude-standard", "-z"])?;
     let mut seen = HashSet::new();
     let mut out = Vec::new();
-    for path in tracked.split('\0').filter(|s| !s.is_empty()) {
-        if seen.insert(path.to_string()) {
-            out.push(WorktreeEntry { path: path.to_string(), ignored: false, is_dir: false });
-        }
-    }
-    // `ls-files --others` over the `status` pass `changed_files` runs: same set (verified
-    // identical), no second status walk in the same reload, and no tracked-state computation.
-    let others = git(repo, &["ls-files", "--others", "--exclude-standard", "-z"])?;
-    for path in others.split('\0').filter(|s| !s.is_empty()) {
+    for path in listed.split('\0').filter(|s| !s.is_empty()) {
         if seen.insert(path.to_string()) {
             out.push(WorktreeEntry { path: path.to_string(), ignored: false, is_dir: false });
         }

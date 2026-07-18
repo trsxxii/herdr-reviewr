@@ -175,7 +175,7 @@ def run_bench(binary, repo, label, iters):
     def scenario(name, key, iters_=None, prep=None):
         """Press `key` `iters_` times, timing each. `prep` keys run untimed first.
         Repeated same-tab presses would no-op (set_tab early-returns), so tab
-        scenarios must interleave their own prep each iteration via `prep_each`."""
+        scenarios use tab_scenario, which hops away untimed before each press."""
         firsts, dones, cold = [], [], None
         for k in prep or []:
             s.press(k)
@@ -222,16 +222,14 @@ def run_bench(binary, repo, label, iters):
         firsts, dones, cold = [], [], None
         for _ in range(iters):
             s.press(leave_key)  # untimed: hop away
-            t0 = time.perf_counter()
-            os.write(s.master, (enter_key + chase_key).encode())
-            first, last, _ = s._read_until_quiet(QUIET_MS, 30.0)
-            if first is None:
+            first_ms, last_ms = s.press(enter_key + chase_key)
+            if first_ms is None:
                 print(f"  !! no response for {name}", file=sys.stderr)
                 return
             if cold is None:
-                cold = round((last - t0) * 1000, 1)
-            firsts.append((first - t0) * 1000)
-            dones.append((last - t0) * 1000)
+                cold = round(last_ms, 1)
+            firsts.append(first_ms)
+            dones.append(last_ms)
         results.append({
             "scenario": name,
             "cold_first_ms": cold,

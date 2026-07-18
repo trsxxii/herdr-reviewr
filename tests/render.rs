@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{Repo, app_on};
+use common::{Repo, app_on, enter_tab};
 use herdr_reviewr::app::{App, Focus, Tab};
 use herdr_reviewr::config::NavigatorPosition;
 use herdr_reviewr::keymap::Keymap;
@@ -956,8 +956,7 @@ fn all_files_tab_bar_footer_and_count_read_for_the_tab() {
     r.commit_all("init");
     r.write("a.rs", "ONE\n"); // one change
     let mut app = app_on(&r);
-    app.set_tab(Tab::AllFiles).unwrap();
-    app.service_reload().unwrap();
+    enter_tab(&mut app, Tab::AllFiles);
 
     let out = render(&app);
     assert!(out.contains("1 Changes"), "tab labels carry their switch digit:\n{out}");
@@ -1006,8 +1005,7 @@ fn all_files_empty_pane_reads_select_a_file() {
     r.write("src/b.rs", "y\n"); // two children so src/ is a real collapsed dir, not a folded file
     r.commit_all("init");
     let mut app = app_on(&r);
-    app.set_tab(Tab::AllFiles).unwrap();
-    app.service_reload().unwrap(); // clean repo: no seed; cursor rests on collapsed src/
+    enter_tab(&mut app, Tab::AllFiles); // clean repo: no seed; cursor rests on collapsed src/
 
     let out = render(&app);
     assert!(out.contains("select a file to read"), "the empty All files read-pane copy:\n{out}");
@@ -1102,8 +1100,7 @@ fn the_markdown_preview_renders_styled_lines_without_a_gutter() {
     r.write("README.md", "# Install\n\nRun `cargo test` for **all** checks.\n");
     r.commit_all("init");
     let mut app = app_on(&r);
-    app.set_tab(Tab::AllFiles).unwrap();
-    app.service_reload().unwrap();
+    enter_tab(&mut app, Tab::AllFiles);
 
     // Source view: raw markdown, and the footer surfaces the way into the preview.
     app.focus = Focus::Diff;
@@ -1452,8 +1449,7 @@ the target body
     r.write("doc.md", &md);
     r.commit_all("init");
     let mut app = app_on(&r);
-    app.set_tab(Tab::AllFiles).unwrap();
-    app.service_reload().unwrap();
+    enter_tab(&mut app, Tab::AllFiles);
 
     // In source view an anchor click is inert: no anchors are painted there.
     let _ = render(&app);
@@ -1511,8 +1507,7 @@ fn the_preview_paints_link_regions_and_names_itself_in_the_title() {
     r.write("README.md", "# Install\n\nsee [docs](https://docs.example/x)\n");
     r.commit_all("init");
     let mut app = app_on(&r);
-    app.set_tab(Tab::AllFiles).unwrap();
-    app.service_reload().unwrap();
+    enter_tab(&mut app, Tab::AllFiles);
 
     let source = render(&app);
     assert!(!source.contains("· preview"), "source view has no preview marker");
@@ -1566,8 +1561,7 @@ fn an_uppercase_unicode_anchor_still_finds_its_heading() {
     r.write("doc.md", &md);
     r.commit_all("init");
     let mut app = app_on(&r);
-    app.set_tab(Tab::AllFiles).unwrap();
-    app.service_reload().unwrap();
+    enter_tab(&mut app, Tab::AllFiles);
     app.toggle_preview();
     let _ = render(&app);
 

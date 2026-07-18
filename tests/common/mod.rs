@@ -123,3 +123,10 @@ pub fn comment() -> herdr_reviewr::forge::Comment {
         reply_count: 0,
     }
 }
+
+/// Switch to `tab` and service the deferred reload the switch schedules, so assertions run
+/// against the freshly reloaded state — the same sequence the event loop performs.
+pub fn enter_tab(app: &mut App, tab: herdr_reviewr::app::Tab) {
+    app.set_tab(tab).unwrap();
+    app.service_reload().unwrap();
+}

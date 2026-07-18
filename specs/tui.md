@@ -261,7 +261,7 @@ A plain-text field that edits at the caret, not only at the end. An empty box sh
 
 - The view polls the worktree every `N` seconds, default 2, configurable.
 - A poll reloads the file list and the open diff, keeping the selected file and scroll where the file still exists.
-- Entering a file tab paints the tab's stashed state in the switch frame, exactly as it was left. Its reload runs right after and paints one frame later — stale for one frame, never wrong (`overview.md` Continuity). A first-ever visit has no stash and fills on that second frame.
+- Entering a file tab paints the tab's stashed state in the switch frame, exactly as it was left. Its reload runs right after and paints one frame later — stale for one frame, never wrong (`overview.md` Continuity). A first-ever visit has no stash to paint and loads before its frame, so the header never describes a tab that shows nothing.
 - While a comment is being composed, the input and its diff are frozen. The file list still updates.
 - `r` forces an immediate reload.
 - The `PR` tab fetches on open, on entering the tab, on `r`, and on the agent's turn-end while active, with a slow fallback timer. Its cadence is separate from the worktree poll.

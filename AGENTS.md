@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository. AGENTS.md is the primary file; CLAUDE.md is a symlink to it.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository. AGENTS.md is the primary file. CLAUDE.md is a symlink to it.
 
 herdr-reviewr is a Rust TUI (ratatui) code-review sidebar: it runs in a [herdr](https://herdr.dev) pane beside a coding agent, shows the agent's diff, takes line comments, and sends them back to the agent's input. One binary, one git worktree per pane. It also runs standalone (`cargo run` in any repo).
 
@@ -14,7 +14,7 @@ herdr-reviewr is a Rust TUI (ratatui) code-review sidebar: it runs in a [herdr](
 
 ## Spec-first
 
-`specs/` holds the contracts (`overview.md` is the map). Behavior changes land in the spec and the code together; code comments cite the spec section they implement. Before changing user-visible behavior, read the governing spec file, and treat divergence between spec and code as a finding to raise, not silently fix.
+`specs/` holds the contracts (`overview.md` is the map). Behavior changes land in the spec and the code together, and code comments cite the spec section they implement. Before changing user-visible behavior, read the governing spec file, and treat divergence between spec and code as a finding to raise, not silently fix.
 
 Load-bearing invariants (specs/overview.md):
 
@@ -24,17 +24,17 @@ Load-bearing invariants (specs/overview.md):
 
 ## Architecture
 
-The runtime is a single-threaded frame loop (`event_loop` in `src/lib.rs`): draw → wait for input or poll deadline → mutate `App` → draw. Git, clipboard, and agent-send calls run synchronously between frames; only three things run on worker threads: the PR input probe, the PR GitHub fetch (`gh`), and config recovery. Direction of travel (see Continuity above): derivation moves behind the paint, the UI thread only paints and reconciles.
+The runtime is a single-threaded frame loop (`event_loop` in `src/lib.rs`): draw → wait for input or poll deadline → mutate `App` → draw. Git, clipboard, and agent-send calls run synchronously between frames. Only three things run on worker threads: the PR input probe, the PR GitHub fetch (`gh`), and config recovery. Direction of travel (see Continuity above): derivation moves behind the paint, the UI thread only paints and reconciles.
 
-- `src/app.rs` — the `App` state machine. Tabs (`Changes`/`AllFiles`/`Pr`), scopes (`Uncommitted`/`Branch`/`LastTurn`), `Focus` (files vs diff pane), `Mode` (`Normal`/`Composing`/`List` overlay). `reload()` rebuilds the changed-set and file entries each poll tick and tab switch; each file tab stashes its full place state on switch-away (`swap_active_with_stash`). While composing, the open diff is frozen (`reload` skips it) so a draft's anchor can't move.
-- `src/git.rs` — every git subprocess. `changed_files` (scope changesets), `all_files` (tracked + untracked + ignored via `ls-files`; never use `git status --ignored`, it walks inside ignored trees and costs seconds), `snapshot_worktree` (temp-index `add -A` + `write-tree` for turn baselines), baseline refs.
+- `src/app.rs` — the `App` state machine. Tabs (`Changes`/`AllFiles`/`Pr`), scopes (`Uncommitted`/`Branch`/`LastTurn`), `Focus` (files vs diff pane), `Mode` (`Normal`/`Composing`/`List` overlay). `reload()` rebuilds the changed-set and file entries each poll tick and tab switch. Each file tab stashes its full place state on switch-away (`swap_active_with_stash`). While composing, the open diff is frozen (`reload` skips it) so a draft's anchor can't move.
+- `src/git.rs` — every git subprocess. `changed_files` (scope changesets), `all_files` (tracked + untracked + ignored via `ls-files` — never use `git status --ignored`, it walks inside ignored trees and costs seconds), `snapshot_worktree` (temp-index `add -A` + `write-tree` for turn baselines), baseline refs.
 - `src/diff.rs` — `FileDiff` build (syntect highlight both sides, similar-line pairing, word emphasis, folds) and `DiffCache`, keyed by path and gated by content hash. Cleared on scope switch and theme change.
 - `src/ui.rs` — all rendering. Row heights and wrapping recompute per frame across the visible diff, so render cost scales with open-file size.
-- `src/forge.rs` + the `PrRefresh`/`PrCoordinator` state machines in `lib.rs` — the PR snapshot. Fetches are tagged with the input (repo identity, pinned HEAD, candidate branches) that produced them; a result paints only if a fresh probe proves the input still matches. This generation/input-tag pattern is the template for moving other derived state off-thread.
+- `src/forge.rs` + the `PrRefresh`/`PrCoordinator` state machines in `lib.rs` — the PR snapshot. Fetches are tagged with the input (repo identity, pinned HEAD, candidate branches) that produced them, and a result paints only if a fresh probe proves the input still matches. This generation/input-tag pattern is the template for moving other derived state off-thread.
 - `src/turn.rs` + `src/herdr.rs` — turn tracking: polls `herdr agent list`, a resting→working edge captures a worktree snapshot that becomes the `last-turn` baseline once the worktree diverges from it.
-- `src/model.rs` — `CommentStore` (in-memory), comment anchoring (`diff_anchored` distinguishes diff comments from All-files content comments; each renders only in its own view).
+- `src/model.rs` — `CommentStore` (in-memory), comment anchoring (`diff_anchored` distinguishes diff comments from All-files content comments — each renders only in its own view).
 - `src/export.rs` — comment export: format all, send via `herdr agent send` or clipboard, consume-on-success only.
-- `src/config.rs` — plugin config: the whole file validates before every frame/action (invariants C1–C8 in specs/config.md); an invalid config blocks all review work until recovery, which carries authored state.
+- `src/config.rs` — plugin config: the whole file validates before every frame/action (invariants C1–C8 in specs/config.md). An invalid config blocks all review work until recovery, which carries authored state.
 - `herdr-plugin.toml` + `herdr/sidebar.sh` — plugin packaging: pane, toggle/open/close actions, worktree.created auto-open.
 
 ## QA install — putting a local build into the user's herdr panes
