@@ -4,6 +4,10 @@
 [![Release](https://img.shields.io/github/v/release/persiyanov/herdr-reviewr)](https://github.com/persiyanov/herdr-reviewr/releases/latest)
 [![License](https://img.shields.io/github/license/persiyanov/herdr-reviewr)](LICENSE)
 
+<p align="center">
+  <a href="#install">install</a> · <a href="#quick-start">quick start</a> · <a href="#controls">controls</a> · <a href="#diff-scopes">scopes</a> · <a href="#configuration">configuration</a> · <a href="#limitations">limitations</a> · <a href="CHANGELOG.md">changelog</a>
+</p>
+
 A code-review sidebar for [herdr](https://herdr.dev). Your agent writes the code. You read its
 diff in a pane beside the chat, comment on the lines, and send the notes back. You never leave
 the terminal.
@@ -59,6 +63,22 @@ herdr plugin action invoke open --plugin persiyanov.reviewr
 
 reviewr opens automatically in new worktrees. Set `auto_open = false` to keep it hidden until you
 ask (see [Configuration](#configuration)).
+
+**To update**, reinstall — your config survives, it is keyed by plugin id:
+
+```bash
+herdr plugin uninstall persiyanov.reviewr && herdr plugin install persiyanov/herdr-reviewr
+```
+
+**Without herdr**, reviewr still works as a plain terminal app. Grab a binary from the
+[releases](https://github.com/persiyanov/herdr-reviewr/releases/latest) and point it at any repo:
+
+```bash
+herdr-reviewr ~/some/repo
+```
+
+Browsing, diffing, the PR tab, commenting, and copying comments to the clipboard all work.
+Only **Send** and the **last turn** scope need herdr around.
 
 ## Quick start
 
@@ -338,15 +358,15 @@ actions can never share a key. A collision makes the whole file invalid, and the
 both actions, so a typo can't silently shadow another shortcut.
 
 `list-wider` and `list-narrower` remain accepted aliases for `navigator-grow` and
-`navigator-shrink`; normalized config output uses the canonical names.
+`navigator-shrink`. Normalized config output uses the canonical names.
 
 ### GitHub repository and hosts
 
 If a remote literally named `upstream` has a supported GitHub `owner/repository` fetch URL, the PR
-tab reads that repository. An absent or unusable `upstream` identity falls back to `origin`; a Git
+tab reads that repository. An absent or unusable `upstream` identity falls back to `origin`, and a Git
 read failure stays visible and never falls through. A standard fork clone — fork at `origin`, base
 repository at `upstream` — therefore works without setup. Both remotes use their primary fetch URL
-after Git's `url.*.insteadOf` rewrite; a separate push URL does not affect PR reads.
+after Git's `url.*.insteadOf` rewrite. A separate push URL does not affect PR reads.
 
 GitHub.com works without configuration. To read pull requests from one GitHub Enterprise host,
 set its bare hostname:
@@ -356,7 +376,7 @@ github_host = "github.example.com"
 ```
 
 Host matching is exact. SSH aliases such as `github.com-work` and
-`github.example.com-work` are not inferred; use a canonical-host remote or a Git
+`github.example.com-work` are not inferred — use a canonical-host remote or a Git
 `url.*.insteadOf` rewrite. A literal Enterprise hostname that begins with `github.com-` is valid
 when configured exactly. `GH_HOST` cannot redirect a PR read. Authenticate Enterprise with
 `gh auth login --hostname github.example.com`.
@@ -449,7 +469,7 @@ This is a focused, young tool. The known constraints:
   `origin`. Without either it tells you what to fix, and Changes and All files keep working.
 - **One repository, never a cross-repository search** — a readable, supported `upstream` is
   authoritative. When `upstream` is absent or does not identify a supported repository, reviewr
-  reads `origin`; a Git read failure stays visible and never falls through. Clones that target
+  reads `origin`, and a Git read failure stays visible and never falls through. Clones that target
   different parent repositories stay separate.
 - **Mirrors only the branch's *open* PR** — a merged or closed PR shows as history. Each comment
   surface caps at one page (100 rows), with a `+more on GitHub ↗` marker when there is more.
@@ -471,8 +491,9 @@ This is a focused, young tool. The known constraints:
 
 ## Building from source
 
-For contributors. `herdr plugin link` skips the download build step, so place a locally built
-binary where the pane command looks for it, at `$HERDR_PLUGIN_ROOT/bin/herdr-reviewr`:
+For the dev setup, tests, and benchmarks, see [CONTRIBUTING.md](CONTRIBUTING.md). To run your own
+build inside herdr panes, link the checkout — `herdr plugin link` runs the binary you build at
+`bin/herdr-reviewr`:
 
 ```bash
 git clone https://github.com/persiyanov/herdr-reviewr
@@ -481,22 +502,9 @@ just install   # build release → bin/herdr-reviewr, ad-hoc re-signed on macOS
 herdr plugin link .
 ```
 
-`just install` replaces the binary with a fresh file and ad-hoc re-signs it. On Apple Silicon
-that matters. Overwriting a code-signed binary in place invalidates its signature, and macOS then
-SIGKILLs it at launch. So a plain `cp target/release/herdr-reviewr bin/` makes the pane open and
-close instantly.
-
-**The dev loop** after the first link:
-
-1. Edit the code.
-2. Run `just install` to rebuild and re-sign the binary under `bin/`.
-3. Relaunch the sidebar by toggling it off and back on with your keybind. The open pane keeps
-   running the *old* process until then, so a rebuild alone changes nothing on screen.
-
-This loop works only while the plugin is **linked**, not installed from the marketplace. Check
-with `herdr plugin list`. A `github:…` source means the pane runs a *downloaded* binary under
-`~/.config/herdr/plugins/github/`, and local rebuilds never appear there no matter how often you
-run `just install`. Switch a GitHub install to a dev link:
+After every `just install`, toggle the sidebar off and on — an open pane keeps running the old
+process. The loop only works while the plugin is linked: a `github:…` source in
+`herdr plugin list` runs a downloaded binary that local rebuilds never touch. Switch with:
 
 ```bash
 herdr plugin uninstall persiyanov.reviewr   # config is keyed by id and survives
