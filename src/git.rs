@@ -752,8 +752,13 @@ fn assemble(
     }
 
     if include_untracked {
-        // Untracked-not-ignored files list as additions.
-        for path in untracked(repo)? {
+        // Untracked-not-ignored files list as additions. One `ls-files --others` pass — the
+        // same definition of untracked `all_files` uses, so the two views can't disagree.
+        // `-z` keeps paths with spaces or special characters verbatim, and files inside a
+        // brand-new directory list individually (.gitignore still applies).
+        let others = git(repo, &["ls-files", "--others", "--exclude-standard", "-z"])?;
+        for path in others.split('\0').filter(|s| !s.is_empty()) {
+            let path = path.to_string();
             if seen.insert(path.clone()) {
                 let additions = untracked_additions(repo, &path);
                 files.push(ChangedFile {
@@ -769,40 +774,6 @@ fn assemble(
 
     files.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(files)
-}
-
-/// Untracked file paths from `git status --porcelain -z --untracked-files=all`. The `-z`
-/// form is NUL-delimited and never quotes or escapes a path, so names with spaces or special
-/// characters survive verbatim — no trimming or unquoting. `--untracked-files=all` lists each
-/// file inside a brand-new directory instead of collapsing it to one `dir/` entry, so the
-/// files in a freshly-created folder are reviewable individually (.gitignore still applies).
-fn untracked(repo: &Path) -> Result<Vec<String>> {
-    let status = git(repo, &["status", "--porcelain", "-z", "--untracked-files=all"])?;
-    Ok(porcelain_records(&status)
-        .into_iter()
-        .filter(|(xy, _)| *xy == "??")
-        .map(|(_, path)| path.to_string())
-        .collect())
-}
-
-/// The `(xy, path)` of each `git status --porcelain -z` record. Each record is `XY␠PATH`; the
-/// first three bytes (status + space) are ASCII, so the slices land on char boundaries. A
-/// rename/copy carries its source in a second NUL field, consumed here so records stay aligned.
-/// Callers keep the status codes they want (`??` for untracked, `!!` for ignored).
-fn porcelain_records(status: &str) -> Vec<(&str, &str)> {
-    let mut out = Vec::new();
-    let mut it = status.split('\0');
-    while let Some(entry) = it.next() {
-        if entry.len() < 3 {
-            continue; // trailing empty field, or a malformed short record
-        }
-        let xy = &entry[..2];
-        if xy.contains('R') || xy.contains('C') {
-            it.next();
-        }
-        out.push((xy, &entry[3..]));
-    }
-    out
 }
 
 /// Addition count of an untracked file: its line count, which is what `git diff` against

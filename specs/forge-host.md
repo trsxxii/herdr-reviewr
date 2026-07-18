@@ -137,10 +137,11 @@ What a user observes:
 ### Refresh
 
 - The first fetch starts when the panel opens, so the tab is populated before the user reaches it.
-- A refetch fires on entering the tab, on the `refresh` binding (default `r`), and on the agent's turn-end (a `working` → `idle`/`done` edge) while the tab is active. A turn may have pushed or merged, changing forge state with no other local signal.
+- A refetch fires on entering the tab, on the `refresh` binding (default `r`), and on the agent's turn-end (a `working` → `idle`/`done` edge) on any tab. A turn may have pushed or merged, changing forge state with no other local signal, and one fetch per turn keeps the tab fresh before it is entered.
 - A fallback poll refetches every 60 seconds while the tab is active. Off the tab there is no polling.
-- A refresh that observes a different repository target or candidate branch set clears the current PR. reviewr cannot prove the snapshot still describes the same pull request (`overview.md` Continuity).
-- A refresh that observes only a moved `HEAD` keeps the snapshot on screen and refetches behind it. The same pull request with newer commits is stale, not wrong. The refreshing indicator covers the gap.
+- The candidate list is the search space, not the identity. It can churn on a mere commit, so churn alone never blanks the tab.
+- A refresh that observes a different repository target clears the current PR. So does candidate churn that drops the branch the painted pull request resolved on. In both cases reviewr cannot prove the snapshot still describes the same pull request (`overview.md` Continuity).
+- Every other observed change — a moved `HEAD`, candidate churn around a still-candidate pull request, churn with nothing resolved on screen — keeps the snapshot painted and refetches behind it. The same pull request with newer commits is stale, not wrong. The refreshing indicator covers the gap.
 - Either observation starts the replacement fetch at once, on or off the tab, so entering the tab finds fresh work already underway.
 - One fetch is in flight at a time. One or more triggers arriving mid-flight supersede its result and start one fresh fetch when it completes.
 - A GitHub change during a fetch can appear on the following fetch.

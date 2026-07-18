@@ -368,18 +368,32 @@ impl PrRefresh {
         }
     }
 
-    fn observed(&mut self, input: crate::forge::PrFetchInput, epoch: u64) -> Option<PrEffect> {
-        // Two tiers (forge-host.md). A different repository or candidate set is an identity
-        // change: the snapshot may describe the wrong pull request, so it clears. A moved
-        // `HEAD` alone is freshness: the same pull request with newer commits stays painted
-        // while the replacement fetches. Both start that fetch at once, on or off the tab,
-        // so entering the tab finds fresh work already underway.
-        let identity_changed = self.current_input.as_ref().is_some_and(|old| {
-            old.repository != input.repository || old.candidates != input.candidates
-        });
-        let head_moved =
-            self.current_input.as_ref().is_some_and(|old| old.head_oid != input.head_oid);
-        if identity_changed || head_moved {
+    fn observed(
+        &mut self,
+        input: crate::forge::PrFetchInput,
+        epoch: u64,
+        painted_head_ref: Option<&str>,
+    ) -> Option<PrEffect> {
+        // Two tiers (forge-host.md). The candidate list is the search space, not the
+        // identity: it churns on a mere commit (a remote tip drops out of the head-relative
+        // buckets), so it must not blank the tab by itself. Identity is the repository plus
+        // the branch the painted pull request resolved on — clear only when the repository
+        // moved or that branch left the candidates, where the snapshot may describe the
+        // wrong pull request. Every other change — a moved `HEAD`, candidate churn around a
+        // still-candidate PR, churn with nothing resolved on screen — keeps the snapshot
+        // painted and refetches behind it. Both tiers start that fetch at once, on or off
+        // the tab, so entering the tab finds fresh work already underway.
+        let Some(previous) = self.current_input.as_ref() else {
+            self.current_input = Some(input.clone());
+            return self.take_pending(&input, epoch);
+        };
+        let painted_branch_left =
+            painted_head_ref.is_some_and(|head| !input.candidates.iter().any(|name| name == head));
+        let identity_changed = previous.repository != input.repository
+            || (previous.candidates != input.candidates && painted_branch_left);
+        let freshness_changed =
+            previous.head_oid != input.head_oid || previous.candidates != input.candidates;
+        if identity_changed || freshness_changed {
             self.generation = self.generation.wrapping_add(1);
             self.pending = None;
             self.current_input = Some(input);
@@ -387,10 +401,16 @@ impl PrRefresh {
             return Some(if identity_changed { PrEffect::Clear } else { PrEffect::Refetch });
         }
         self.current_input = Some(input.clone());
+        self.take_pending(&input, epoch)
+    }
+
+    /// Apply the pending completion when it exactly matches the just-verified input, or ask
+    /// for a fresh fetch when it doesn't. The shared tail of [`Self::observed`].
+    fn take_pending(&mut self, input: &crate::forge::PrFetchInput, epoch: u64) -> Option<PrEffect> {
         if let Some(completion) = self.pending.take() {
             if completion.generation == self.generation
                 && completion.config_epoch == epoch
-                && completion.input == input
+                && completion.input == *input
             {
                 self.fetch_needed = false;
                 return Some(PrEffect::Apply(completion.view));
@@ -736,7 +756,9 @@ fn event_loop(
                 // turn may have pushed or run `gh pr merge`; refetch the PR if the tab is showing it
                 // (entering the tab refetches on its own otherwise) (specs/forge-host.md).
                 let turn_changed = app.track_turn();
-                if turn_changed && app.tab == crate::app::Tab::Pr {
+                // One fetch per turn, on any tab: the turn may have pushed or merged, and
+                // entering the tab then finds fresh work already underway (forge-host.md).
+                if turn_changed {
                     app.pr_pending = true;
                 }
                 // A failed refresh must never crash the UI or drop a comment.
@@ -815,7 +837,8 @@ fn apply_pr_probe_result(
             true
         }
         Ok(input) => {
-            match pr.refresh.observed(input, config_epoch) {
+            let painted = app.pr_snapshot().map(|s| s.head_ref.clone());
+            match pr.refresh.observed(input, config_epoch, painted.as_deref()) {
                 Some(PrEffect::Clear) => {
                     app.clear_pr();
                     pr.wait_started = (app.tab == crate::app::Tab::Pr).then(Instant::now);
@@ -1333,7 +1356,7 @@ mod refresh_tests {
         let mut app = App::new(std::path::PathBuf::from("."), Scope::Uncommitted, None);
         let mut coordinator = PrCoordinator::new(true);
         coordinator.refresh.current_input = Some(input("head"));
-        let moved = input_with("github.com", "acme", "widgets", "head", &["renamed"]);
+        let moved = input_with("github.com", "upstream", "widgets", "head", &["feature"]);
 
         assert!(apply_pr_probe_result(&mut app, &mut coordinator, Ok(moved.clone()), 0));
         assert!(matches!(app.pr, PrView::Pending));
@@ -1436,7 +1459,7 @@ mod refresh_tests {
     fn superseded_completion_never_applies_and_schedules_the_new_generation() {
         let a = input("a");
         let mut refresh = PrRefresh::new(true);
-        assert!(refresh.observed(a.clone(), 0).is_none());
+        assert!(refresh.observed(a.clone(), 0, None).is_none());
         let (old_generation, old_input) = refresh.take_fetch().unwrap();
 
         refresh.trigger();
@@ -1450,7 +1473,7 @@ mod refresh_tests {
             0,
             true,
         );
-        assert!(refresh.observed(a, 0).is_none());
+        assert!(refresh.observed(a, 0, None).is_none());
 
         let (new_generation, _) = refresh.take_fetch().unwrap();
         assert_ne!(new_generation, old_generation);
@@ -1461,7 +1484,7 @@ mod refresh_tests {
         let a = input("a");
         let b = input("b");
         let mut refresh = PrRefresh::new(true);
-        refresh.observed(a.clone(), 0);
+        refresh.observed(a.clone(), 0, None);
         let (generation, old_input) = refresh.take_fetch().unwrap();
         refresh.completed(
             TaggedPr { generation, config_epoch: 0, input: old_input, view: no_pr() },
@@ -1471,16 +1494,16 @@ mod refresh_tests {
 
         // A head-only change supersedes the completed old snapshot without blanking: the
         // effect is Refetch, the stale completion is discarded, and the new fetch is queued.
-        assert!(matches!(refresh.observed(b.clone(), 0), Some(PrEffect::Refetch)));
+        assert!(matches!(refresh.observed(b.clone(), 0, None), Some(PrEffect::Refetch)));
         assert_eq!(refresh.take_fetch().map(|(_, input)| input), Some(b.clone()));
-        assert!(refresh.observed(b, 0).is_none(), "the old completion never applies");
+        assert!(refresh.observed(b, 0, None).is_none(), "the old completion never applies");
     }
 
     #[test]
     fn a_trigger_during_completion_verification_supersedes_before_apply() {
         let a = input("a");
         let mut refresh = PrRefresh::new(true);
-        refresh.observed(a.clone(), 0);
+        refresh.observed(a.clone(), 0, None);
         let (old_generation, fetch_input) = refresh.take_fetch().unwrap();
         refresh.completed(
             TaggedPr {
@@ -1494,24 +1517,23 @@ mod refresh_tests {
         );
 
         refresh.trigger();
-        assert!(refresh.observed(a, 0).is_none(), "the completed snapshot never applies");
+        assert!(refresh.observed(a, 0, None).is_none(), "the completed snapshot never applies");
         let (new_generation, _) = refresh.take_fetch().unwrap();
         assert_ne!(new_generation, old_generation);
     }
 
     #[test]
-    fn repository_target_and_candidates_are_refresh_boundaries() {
+    fn repository_changes_are_identity_boundaries_regardless_of_the_painted_branch() {
         let original = input("head");
         let changes = [
             input_with("github.com", "upstream", "widgets", "head", &["feature"]),
             input_with("github.enterprise.test", "acme", "widgets", "head", &["feature"]),
             input_with("github.com", "acme", "other-widgets", "head", &["feature"]),
-            input_with("github.com", "acme", "widgets", "head", &["published", "feature"]),
         ];
 
         for changed in changes {
             let mut refresh = PrRefresh::new(true);
-            refresh.observed(original.clone(), 0);
+            refresh.observed(original.clone(), 0, None);
             let (generation, old_input) = refresh.take_fetch().unwrap();
             refresh.completed(
                 TaggedPr { generation, config_epoch: 0, input: old_input, view: no_pr() },
@@ -1519,9 +1541,48 @@ mod refresh_tests {
                 true,
             );
 
-            assert!(matches!(refresh.observed(changed.clone(), 0), Some(PrEffect::Clear)));
+            // Even a painted PR whose branch survives the change clears: the repository moved.
+            assert!(matches!(
+                refresh.observed(changed.clone(), 0, Some("feature")),
+                Some(PrEffect::Clear)
+            ));
             assert_eq!(refresh.take_fetch().map(|(_, input)| input), Some(changed));
         }
+    }
+
+    #[test]
+    fn candidate_churn_is_identity_only_when_the_painted_branch_leaves() {
+        // The candidate list is the search space, not the identity (forge-host.md): churn
+        // around a still-candidate painted PR, or with nothing resolved, refetches behind
+        // the painted snapshot instead of blanking it.
+        let original = input("head"); // candidates: ["feature"]
+        let grown = input_with("github.com", "acme", "widgets", "head", &["published", "feature"]);
+        let dropped = input_with("github.com", "acme", "widgets", "head", &["published"]);
+
+        // Painted branch still among the candidates: freshness, not identity.
+        let mut refresh = PrRefresh::new(true);
+        refresh.observed(original.clone(), 0, None);
+        let _ = refresh.take_fetch().unwrap();
+        assert!(matches!(
+            refresh.observed(grown.clone(), 0, Some("feature")),
+            Some(PrEffect::Refetch)
+        ));
+        assert_eq!(refresh.take_fetch().map(|(_, input)| input), Some(grown.clone()));
+
+        // Painted branch left the candidates: the snapshot may be the wrong PR — clear.
+        let mut refresh = PrRefresh::new(true);
+        refresh.observed(original.clone(), 0, None);
+        let _ = refresh.take_fetch().unwrap();
+        assert!(matches!(
+            refresh.observed(dropped.clone(), 0, Some("feature")),
+            Some(PrEffect::Clear)
+        ));
+
+        // Nothing resolved on screen: there is no wrong PR to protect against — refetch.
+        let mut refresh = PrRefresh::new(true);
+        refresh.observed(original, 0, None);
+        let _ = refresh.take_fetch().unwrap();
+        assert!(matches!(refresh.observed(grown, 0, None), Some(PrEffect::Refetch)));
     }
 
     #[test]
@@ -1529,14 +1590,14 @@ mod refresh_tests {
         let a = input("a");
         let b = input("b");
         let mut refresh = PrRefresh::new(true);
-        refresh.observed(a.clone(), 1);
+        refresh.observed(a.clone(), 1, None);
         let (generation, old_input) = refresh.take_fetch().unwrap();
         refresh.completed(
             TaggedPr { generation, config_epoch: 1, input: old_input, view: no_pr() },
             2,
             false,
         );
-        assert!(matches!(refresh.observed(b.clone(), 2), Some(PrEffect::Refetch)));
+        assert!(matches!(refresh.observed(b.clone(), 2, None), Some(PrEffect::Refetch)));
         assert_eq!(
             refresh.take_fetch().map(|(_, input)| input),
             Some(b),
@@ -1548,7 +1609,7 @@ mod refresh_tests {
     fn matching_completion_applies_only_after_the_verification_probe() {
         let a = input("a");
         let mut refresh = PrRefresh::new(true);
-        refresh.observed(a.clone(), 3);
+        refresh.observed(a.clone(), 3, None);
         let (generation, fetch_input) = refresh.take_fetch().unwrap();
         refresh.completed(
             TaggedPr { generation, config_epoch: 3, input: fetch_input, view: no_pr() },
@@ -1556,14 +1617,14 @@ mod refresh_tests {
             true,
         );
 
-        assert!(matches!(refresh.observed(a, 3), Some(PrEffect::Apply(PrView::NoPr))));
+        assert!(matches!(refresh.observed(a, 3, None), Some(PrEffect::Apply(PrView::NoPr))));
     }
 
     #[test]
     fn a_failed_verification_probe_discards_the_hidden_completion() {
         let a = input("a");
         let mut refresh = PrRefresh::new(true);
-        refresh.observed(a.clone(), 0);
+        refresh.observed(a.clone(), 0, None);
         let (generation, fetch_input) = refresh.take_fetch().unwrap();
         refresh.completed(
             TaggedPr { generation, config_epoch: 0, input: fetch_input, view: no_pr() },
@@ -1574,7 +1635,7 @@ mod refresh_tests {
         refresh.probe_failed(false);
         assert!(refresh.take_fetch().is_none());
         refresh.trigger();
-        assert!(refresh.observed(a, 0).is_none());
+        assert!(refresh.observed(a, 0, None).is_none());
         assert!(refresh.take_fetch().is_some(), "the next refresh starts a fresh GitHub fetch");
     }
 
@@ -1582,7 +1643,7 @@ mod refresh_tests {
     fn a_failed_probe_cannot_fetch_the_previous_repository() {
         let a = input("a");
         let mut refresh = PrRefresh::new(true);
-        refresh.observed(a.clone(), 0);
+        refresh.observed(a.clone(), 0, None);
         let _ = refresh.take_fetch().unwrap();
         refresh.trigger();
 
@@ -1590,7 +1651,7 @@ mod refresh_tests {
         assert!(refresh.take_fetch().is_none());
 
         refresh.trigger();
-        assert!(refresh.observed(a, 0).is_none());
+        assert!(refresh.observed(a, 0, None).is_none());
         assert!(refresh.take_fetch().is_some());
     }
 
@@ -1598,12 +1659,12 @@ mod refresh_tests {
     fn a_failed_probe_keeps_a_refresh_that_was_queued_behind_it() {
         let a = input("a");
         let mut refresh = PrRefresh::new(true);
-        refresh.observed(a.clone(), 0);
+        refresh.observed(a.clone(), 0, None);
         let _ = refresh.take_fetch().unwrap();
 
         refresh.trigger();
         refresh.probe_failed(true);
-        assert!(refresh.observed(a, 0).is_none());
+        assert!(refresh.observed(a, 0, None).is_none());
         assert!(refresh.take_fetch().is_some(), "the queued refresh still starts GitHub work");
     }
 
@@ -1611,7 +1672,7 @@ mod refresh_tests {
     fn an_unproven_repository_replaces_the_snapshot_and_blocks_a_stale_fetch() {
         let mut app = App::new(std::path::PathBuf::from("."), Scope::Uncommitted, None);
         let mut coordinator = PrCoordinator::new(true);
-        coordinator.refresh.observed(input("head"), 0);
+        coordinator.refresh.observed(input("head"), 0, None);
         let _ = coordinator.refresh.take_fetch().unwrap();
         coordinator.refresh.trigger();
         coordinator.probe_pending = false;
@@ -1634,7 +1695,7 @@ mod refresh_tests {
         let snapshot = no_pr();
         app.apply_pr(snapshot.clone());
         let mut coordinator = PrCoordinator::new(true);
-        coordinator.refresh.observed(input("head"), 0);
+        coordinator.refresh.observed(input("head"), 0, None);
         coordinator.probe_pending = false;
 
         assert!(apply_pr_probe_result(
@@ -1657,7 +1718,7 @@ mod refresh_tests {
         let mut app = App::new(std::path::PathBuf::from("."), Scope::Uncommitted, None);
         app.apply_pr(no_pr());
         let mut coordinator = PrCoordinator::new(true);
-        coordinator.refresh.observed(input("head"), 0);
+        coordinator.refresh.observed(input("head"), 0, None);
         coordinator.probe_pending = false;
 
         assert!(apply_pr_probe_result(
@@ -1677,7 +1738,7 @@ mod refresh_tests {
     #[test]
     fn config_change_off_the_pr_tab_does_not_schedule_a_fetch() {
         let mut refresh = PrRefresh::new(false);
-        refresh.observed(input("a"), 0);
+        refresh.observed(input("a"), 0, None);
         refresh.config_changed(false);
         assert!(refresh.take_fetch().is_none());
     }

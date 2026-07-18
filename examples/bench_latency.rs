@@ -1,5 +1,8 @@
-//! Perceived-latency benchmark: times the exact blocking calls reviewr's UI thread
-//! runs for tab switches and file switches, against a real repo.
+//! Component attribution for the perceived-latency work: times the individual blocking
+//! calls (git spawns, diff builds, highlights) that make up a switch, against a real repo.
+//! `scripts/bench_tui.py` is the acceptance instrument — it measures keypress to painted
+//! frame in the real binary. Reach for this tool to find out *where* a slow number in that
+//! harness comes from.
 //!
 //! Usage: `cargo run --release --example bench_latency -- <repo-path> [label]`
 
@@ -152,14 +155,8 @@ fn main() {
         );
     }
 
-    // --- Composite: what one tab switch costs -----------------------------------
-    // set_tab -> reload: changed_files + (AllFiles: all_files) + open shown file.
-    row(
-        "TAB SWITCH -> Changes (reload, no reopen)",
-        sample(3, || {
-            git::changed_files(&repo, Scope::Uncommitted, None, &bases).unwrap();
-        }),
-    );
+    // --- Composite: what one All-files reload costs ------------------------------
+    // (The Changes composite is the changed_files row above — one call, no reopen.)
     row(
         "TAB SWITCH -> All files (reload, no reopen)",
         sample(3, || {

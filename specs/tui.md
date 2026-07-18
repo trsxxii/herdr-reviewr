@@ -264,7 +264,7 @@ A plain-text field that edits at the caret, not only at the end. An empty box sh
 - Entering a file tab paints the tab's stashed state in the switch frame, exactly as it was left. Its reload runs right after and paints one frame later — stale for one frame, never wrong (`overview.md` Continuity). A first-ever visit has no stash to paint and loads before its frame, so the header never describes a tab that shows nothing.
 - While a comment is being composed, the input and its diff are frozen. The file list still updates.
 - `r` forces an immediate reload.
-- The `PR` tab fetches on open, on entering the tab, on `r`, and on the agent's turn-end while active, with a slow fallback timer. Its cadence is separate from the worktree poll.
+- The `PR` tab fetches on open, on entering the tab, on `r`, and on the agent's turn-end on any tab, with a slow fallback timer while active. Its cadence is separate from the worktree poll.
 - A PR refetch keeps your place: the cursor follows the selected comment by identity, and both pane scroll positions hold. A vanished comment clamps the cursor and resets the read pane.
 - Refresh uses no herdr events. The same poll samples the agent's status for the `last-turn` baseline (`herdr-host.md`).
 - In `last-turn` scope, before a turn start is observed, `Changes` shows `waiting for the agent's next turn`, never a stale or whole-worktree diff. `All files` keeps its content.

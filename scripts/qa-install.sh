@@ -21,12 +21,9 @@ BIN="$BIN_DIR/herdr-reviewr"
 # Keep one pristine release for rollback. Never overwrite an existing backup.
 [ -f "$BIN.release-backup" ] || cp "$BIN" "$BIN.release-backup"
 
-# Replace with a fresh inode, then ad-hoc re-sign. An in-place overwrite keeps the old
-# inode and macOS then SIGKILLs the binary at every launch (exit 137, blank pane).
-rm -f "$BIN"
-cp "$NEW" "$BIN.staging"
-mv "$BIN.staging" "$BIN"
-[ "$(uname)" = "Darwin" ] && codesign --force --sign - "$BIN"
+# The fresh-inode swap lives in one place (scripts/swap-binary.sh): an in-place overwrite
+# keeps the old inode and macOS then SIGKILLs the binary at every launch (exit 137).
+"$(dirname "$0")/swap-binary.sh" "$NEW" "$BIN"
 
 # Prove the installed binary actually runs before touching any pane.
 "$BIN" --resolve-plugin-config >/dev/null || {

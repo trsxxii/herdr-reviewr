@@ -32,12 +32,7 @@ run:
 install:
     cargo build --release
     mkdir -p bin
-    # Replace with a fresh inode, then ad-hoc re-sign: macOS SIGKILLs a binary whose signature
-    # an in-place overwrite invalidated, so a plain `cp` over the old binary makes the pane die
-    # at launch on Apple Silicon. No-op on Linux.
-    rm -f bin/herdr-reviewr
-    cp target/release/herdr-reviewr bin/herdr-reviewr
-    [ "$(uname)" = "Darwin" ] && codesign --force --sign - bin/herdr-reviewr || true
+    ./scripts/swap-binary.sh target/release/herdr-reviewr bin/herdr-reviewr
 
 # build release and swap it into the GitHub-installed plugin for local QA (docs/qa-install.md)
 qa-install:

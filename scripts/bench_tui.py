@@ -155,6 +155,17 @@ class Session:
 # --- scenarios ---------------------------------------------------------------
 
 
+def result_row(name, firsts, dones):
+    """One scenario result. Iteration 1 is reported per-metric — cold first-byte and cold
+    painted — so "cold" has exactly one meaning everywhere."""
+    return {
+        "scenario": name,
+        "cold": {"first_ms": round(firsts[0], 1), "painted_ms": round(dones[0], 1)},
+        "first_byte": stats(firsts),
+        "painted": stats(dones),
+    }
+
+
 def stats(xs):
     xs = sorted(xs)
     n = len(xs)
@@ -176,7 +187,7 @@ def run_bench(binary, repo, label, iters):
         """Press `key` `iters_` times, timing each. `prep` keys run untimed first.
         Repeated same-tab presses would no-op (set_tab early-returns), so tab
         scenarios use tab_scenario, which hops away untimed before each press."""
-        firsts, dones, cold = [], [], None
+        firsts, dones = [], []
         for k in prep or []:
             s.press(k)
         for _ in range(iters_ or iters):
@@ -184,58 +195,37 @@ def run_bench(binary, repo, label, iters):
             if f is None:
                 print(f"  !! no response for {name} key {key!r}", file=sys.stderr)
                 return
-            if cold is None:
-                cold = round(f, 1)
             firsts.append(f)
             dones.append(d)
-        results.append({
-            "scenario": name,
-            "cold_first_ms": cold,
-            "first_byte": stats(firsts),
-            "painted": stats(dones),
-        })
+        results.append(result_row(name, firsts, dones))
 
     def tab_scenario(name, enter_key, leave_key):
         """Time entering `enter_key`'s tab from the other tab, iters times."""
-        firsts, dones, cold = [], [], None
+        firsts, dones = [], []
         for _ in range(iters):
             s.press(leave_key)  # untimed: hop away
             f, d = s.press(enter_key)
             if f is None:
                 print(f"  !! no response for {name}", file=sys.stderr)
                 return
-            if cold is None:
-                cold = round(f, 1)
             firsts.append(f)
             dones.append(d)
-        results.append({
-            "scenario": name,
-            "cold_first_ms": cold,
-            "first_byte": stats(firsts),
-            "painted": stats(dones),
-        })
+        results.append(result_row(name, firsts, dones))
 
     def chained_scenario(name, leave_key, enter_key, chase_key):
         """Time `chase_key` written in the same burst as a tab switch. Catches
         work that a paint-then-refresh switch defers to just after its frame:
         the chased key stalls behind it, and this is where that shows up."""
-        firsts, dones, cold = [], [], None
+        firsts, dones = [], []
         for _ in range(iters):
             s.press(leave_key)  # untimed: hop away
             first_ms, last_ms = s.press(enter_key + chase_key)
             if first_ms is None:
                 print(f"  !! no response for {name}", file=sys.stderr)
                 return
-            if cold is None:
-                cold = round(last_ms, 1)
             firsts.append(first_ms)
             dones.append(last_ms)
-        results.append({
-            "scenario": name,
-            "cold_first_ms": cold,
-            "first_byte": stats(firsts),
-            "painted": stats(dones),
-        })
+        results.append(result_row(name, firsts, dones))
 
     tab_scenario("tab_enter_all_files", "2", "1")
     tab_scenario("tab_enter_changes", "1", "2")
@@ -295,9 +285,9 @@ def main():
         run = run_bench(args.binary, repo, label, args.iterations)
         out["runs"].append(run)
         for r in run["results"]:
-            fb, p = r["first_byte"], r["painted"]
+            fb, p, c = r["first_byte"], r["painted"], r["cold"]
             print(
-                f"{r['scenario']:<24} cold {r['cold_first_ms']:>7.1f}ms   "
+                f"{r['scenario']:<24} cold {c['first_ms']:>6.1f}/{c['painted_ms']:>7.1f}ms   "
                 f"first-byte med {fb['median']:>7.1f}ms p95 {fb['p95']:>7.1f}ms   "
                 f"painted med {p['median']:>7.1f}ms"
             )
