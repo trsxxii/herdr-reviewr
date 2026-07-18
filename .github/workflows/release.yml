@@ -19,7 +19,7 @@ jobs:
   create-release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       # The release body is the tag's CHANGELOG.md section, so the page a human lands on says
       # what changed. The action parses the Keep-a-Changelog format and fails when the tag has
       # no section, so a forgotten changelog entry fails the release instead of shipping the
@@ -43,7 +43,7 @@ jobs:
           - { target: x86_64-unknown-linux-gnu, os: ubuntu-latest }
           - { target: aarch64-unknown-linux-gnu, os: ubuntu-latest }
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # Builds herdr-reviewr for the target (cross-compiling aarch64 Linux via `cross` as needed),
       # archives it as herdr-reviewr-<target>.tar.gz with a .sha256 sidecar, and uploads both to
