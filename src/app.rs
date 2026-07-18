@@ -299,6 +299,9 @@ pub struct App {
     /// Whether the pending request re-reveals the cursor when its result lands — set by a
     /// user-initiated switch, never by a poll.
     pub world_reveal: bool,
+    /// Whether the active tab's refresh has been in flight past the indicator delay —
+    /// drives the tab-strip glyph, maintained by the event loop (specs/tui.md).
+    pub refresh_indicator: bool,
     /// Whether the active file tab has ever completed a reload (stash counterpart:
     /// `TabStash::visited`). Gates the first-visit synchronous load in [`Self::set_tab`].
     tab_visited: bool,
@@ -414,6 +417,7 @@ impl App {
             world_pending: false,
             world_sample: false,
             world_reveal: false,
+            refresh_indicator: false,
             tab_visited: false,
             highlighter: Highlighter::new(theme.syntax),
             palette: theme.palette,

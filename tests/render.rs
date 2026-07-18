@@ -390,9 +390,10 @@ fn the_header_totals_the_scope_and_hides_them_at_zero() {
     r.write("untracked.rs", "one\ntwo\n");
     let app = app_on(&r);
 
-    // 62 columns is the exact fit. The totals' `−` is multi-byte, so this breaks if the
-    // header measures bytes instead of display width.
-    let header = render_at(&app, 62).lines().next().unwrap().to_string();
+    // 64 columns is the exact fit (the tab strip ends in the two-column reserved
+    // indicator cell). The totals' `−` is multi-byte, so this breaks if the header
+    // measures bytes instead of display width.
+    let header = render_at(&app, 64).lines().next().unwrap().to_string();
     assert!(header.contains("2 changed  +3 −1"), "count, then the totals:\n{header}");
 
     let clean = Repo::init();
@@ -516,7 +517,7 @@ fn pr_header_names_the_resolved_branch_and_marks_a_fork() {
     assert!(header.contains("⑂ persiyanov/feature"), "fork head is marked:\n{header}");
     // Narrow bars drop the branch first; the chip's number stays.
     app.pr = snap(false);
-    let narrow = render_at(&app, 44).lines().next().unwrap().to_string();
+    let narrow = render_at(&app, 46).lines().next().unwrap().to_string();
     assert!(!narrow.contains("persiyanov/feature"), "branch drops when narrow:\n{narrow}");
     assert!(narrow.contains("#226"), "the chip survives a narrow bar:\n{narrow}");
 
@@ -1329,7 +1330,7 @@ fn pr_navigator_scroll_is_independent_and_preserved() {
 }
 
 #[test]
-fn the_refetch_indicator_lives_in_the_title_not_the_content() {
+fn the_refresh_glyph_lives_in_the_tab_strip_not_the_content() {
     use herdr_reviewr::forge::{PrSnapshot, PrView};
     let r = Repo::init();
     r.write("x.rs", "y\n");
@@ -1344,14 +1345,22 @@ fn the_refetch_indicator_lives_in_the_title_not_the_content() {
         out.lines().position(|l| l.contains(needle)).unwrap_or(usize::MAX)
     };
     let before = row_of(&steady, "steady content");
+    assert!(!steady.contains('⟳'), "the reserved cell is blank while idle");
 
-    app.set_pr_refreshing(true);
+    // The reserved cell means the glyph's appearance shifts nothing (specs/tui.md).
+    app.refresh_indicator = true;
     let refreshing = render(&app);
-    assert!(refreshing.contains("refreshing…"), "the indicator shows:\n{refreshing}");
+    let header = refreshing.lines().next().unwrap();
+    assert!(header.contains('⟳'), "the glyph shows in the tab strip:\n{header}");
     assert_eq!(
         row_of(&refreshing, "steady content"),
         before,
         "a refetch never shifts the content the reader is on"
+    );
+    assert_eq!(
+        steady.lines().next().unwrap().replace(' ', "").len(),
+        header.replace(' ', "").len() - '⟳'.len_utf8(),
+        "the glyph fills the reserved blank cell instead of inserting one"
     );
 }
 

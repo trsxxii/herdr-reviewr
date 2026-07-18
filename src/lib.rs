@@ -537,6 +537,13 @@ fn event_loop(
                 app.set_pr_refreshing(true);
                 pr.wait_started = None;
             }
+            // The tab-strip refresh glyph: each tab shows only its own refresh past the
+            // delay (specs/tui.md).
+            app.refresh_indicator = if app.tab == crate::app::Tab::Pr {
+                app.pr_refreshing()
+            } else {
+                world_inflight.is_some_and(|started| started.elapsed() >= PR_LOADING_DELAY)
+            };
             // Expire a stale status line: restart the timer when the message changes, and clear
             // it once it has lingered past the TTL, so a notification doesn't stay up forever.
             if app.status != last_status {

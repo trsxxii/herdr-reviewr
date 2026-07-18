@@ -76,7 +76,7 @@ Every layout change preserves the focused pane and each pane's cursor or selecti
 - A scope switch rebuilds the changed set before its frame, so the list never shows another scope's files under the new scope's label. A `last-turn` switch diffs against the most recently observed baseline. The tree and its annotations refresh behind it.
 - While a comment is being composed, the input and its diff are frozen. A result that lands mid-composition leaves both untouched, however early its refresh began. The file list still updates.
 - `r` triggers an immediate refresh. Its result lands like a poll's.
-- A refresh in flight longer than 150ms shows a one-cell `⟳` in a reserved cell at the end of the tab strip, so nothing shifts when it appears. The glyph clears when the result lands or is discarded. A faster refresh shows nothing. The rule covers every tab: the `PR` tab's fetch is its refresh.
+- A refresh in flight longer than 150ms shows a one-cell `⟳` in a reserved cell at the end of the tab strip, so nothing shifts when it appears. The glyph clears when the result lands or is discarded. A faster refresh shows nothing. Each tab shows only its own refresh: the file tabs the world refresh, the `PR` tab its fetch.
 - The `PR` tab fetches on its own cadence (`pr-tab.md`), separate from the worktree poll.
 - Refresh uses no herdr events. The same poll samples the agent's status for the `last-turn` baseline (`herdr-host.md`).
 - In `last-turn` scope, before a turn start is observed, `Changes` shows `waiting for the agent's next turn`, never a stale or whole-worktree diff. `All files` keeps its content.

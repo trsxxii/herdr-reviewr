@@ -418,6 +418,15 @@ fn tab_labels(keymap: &Keymap) -> [(Tab, String); 3] {
 const HEADER_LEAD: &str = " ";
 const TAB_GAP: &str = "  ";
 const HEADER_GAP: &str = "  ";
+/// The reserved indicator cell at the end of the tab strip: one gap column plus one glyph
+/// column, always present so nothing shifts when the glyph appears (specs/tui.md).
+const INDICATOR_CELL: usize = 2;
+
+/// The reserved cell's content: the refresh glyph while the active tab's refresh has been
+/// in flight past the delay, a blank cell otherwise.
+fn indicator_glyph(app: &App) -> &'static str {
+    if app.refresh_indicator { "⟳" } else { " " }
+}
 
 /// Each tab's `(tab, start_col, end_col)` in the header, the single source the bar paints and
 /// the click hit-tests against.
@@ -434,9 +443,10 @@ fn tab_spans(keymap: &Keymap) -> Vec<(Tab, usize, usize)> {
     out
 }
 
-/// The column where the scope chip starts: past the tab bar and its trailing gap.
+/// The column where the scope chip starts: past the tab bar, its reserved spinner cell,
+/// and its trailing gap.
 fn header_prefix_len(spans: &[(Tab, usize, usize)]) -> usize {
-    spans.last().map_or(HEADER_LEAD.len(), |&(_, _, end)| end) + HEADER_GAP.len()
+    spans.last().map_or(HEADER_LEAD.len(), |&(_, _, end)| end) + INDICATOR_CELL + HEADER_GAP.len()
 }
 
 fn scope_chip(app: &App) -> String {
@@ -486,6 +496,9 @@ fn tab_bar_spans(app: &App) -> Vec<Span<'static>> {
         };
         spans.push(Span::styled(label, style));
     }
+    // The reserved indicator cell (specs/tui.md): blank when idle, so nothing shifts.
+    spans.push(Span::styled(" ", bar));
+    spans.push(Span::styled(indicator_glyph(app), bar.fg(p.yellow)));
     spans.push(Span::styled(HEADER_GAP, bar));
     spans
 }
@@ -1726,16 +1739,11 @@ fn render_overflow_scrollbar(
 fn render_pr_read(frame: &mut Frame, app: &App, area: Rect) {
     let p = app.palette();
     let selected = app.pr_selected_comment();
-    let mut title = match selected {
+    let title = match selected {
         Some(cm) => format!("@{} · {}", cm.author, cm.anchor),
         None if app.pr_on_description() => "description".to_string(),
         None => "PR".to_string(),
     };
-    // The refetch indicator lives in the title, never in the content flow — a poll must
-    // not shift what the reader is reading (policies/ux-responsiveness.md).
-    if app.pr_refreshing() {
-        title.push_str(" · refreshing…");
-    }
     let block = bordered(&title, app.focus == Focus::Diff, p);
     let inner = block.inner(area);
     frame.render_widget(block, area);
