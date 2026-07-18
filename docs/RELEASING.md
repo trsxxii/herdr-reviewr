@@ -46,7 +46,7 @@ Pick the new version with semver: a behavior change or new feature is a minor bu
 
 `release.yml` (on `push: tags: ["v*"]`):
 
-- creates the Release for the tag if absent (`gh release create --verify-tag --generate-notes`);
+- creates the Release with the tag's `CHANGELOG.md` section as its body (`taiki-e/create-gh-release-action`). A tag with no matching changelog section fails the release — finalize the changelog before tagging;
 - builds `herdr-reviewr` for `aarch64-apple-darwin`, `x86_64-apple-darwin`,
   `x86_64-unknown-linux-gnu`, and `aarch64-unknown-linux-gnu`;
 - uploads each as `herdr-reviewr-<target>.tar.gz` with a `.sha256` sidecar.

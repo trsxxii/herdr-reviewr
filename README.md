@@ -1,5 +1,9 @@
 # herdr-reviewr
 
+[![CI](https://github.com/persiyanov/herdr-reviewr/actions/workflows/ci.yml/badge.svg)](https://github.com/persiyanov/herdr-reviewr/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/persiyanov/herdr-reviewr)](https://github.com/persiyanov/herdr-reviewr/releases/latest)
+[![License](https://img.shields.io/github/license/persiyanov/herdr-reviewr)](LICENSE)
+
 A code-review sidebar for [herdr](https://herdr.dev). Your agent writes the code. You read its
 diff in a pane beside the chat, comment on the lines, and send the notes back. You never leave
 the terminal.
