@@ -6,6 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-07-18
+
+### Changed
+- **Tab switches are instant.** Entering `Changes` or `All files` paints the tab exactly as you
+  left it in one frame and refreshes right behind it, on any repo size. A first-ever visit loads
+  before its frame, so the header never describes a tab that shows nothing.
+- **`All files` is fast in huge repos.** The ignored-tree listing no longer walks inside ignored
+  directories. Entering the tab dropped from over a second to well under 200ms on a 10k-file repo
+  with gigabytes of ignored trees, and every background refresh sheds the same cost.
+- **The `PR` tab keeps its snapshot while it refreshes.** New commits no longer blank the tab to
+  `loading`. It clears only when the repository changes or the shown pull request's branch stops
+  being a candidate. A turn-end refetch now fires from any tab, so opening `PR` after the agent
+  finishes finds fresh data already on its way.
+
 ## [0.18.1] — 2026-07-16
 
 ### Changed
