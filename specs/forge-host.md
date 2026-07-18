@@ -142,7 +142,7 @@ What a user observes:
 - A fallback poll refetches every 60 seconds while the tab is active. Off the tab there is no polling.
 - The locally derived state — the pinned `HEAD` and base, the publication points, the tiebreak — moves on a mere commit or push, so it is freshness, never identity. Its churn alone never blanks the tab.
 - A refresh that observes a different repository target or origin clears the current PR. reviewr cannot prove the snapshot still describes the same pull request (`overview.md` Continuity).
-- Every other observed change keeps the snapshot painted and refetches behind it. The same pull request with newer work is stale, not wrong. The refreshing indicator covers the gap.
+- Every other observed change keeps the snapshot painted and refetches behind it. The same pull request with newer work is stale, not wrong. The in-flight glyph covers the gap (`tui.md`).
 - Either observation starts the replacement fetch at once, on or off the tab, so entering the tab finds fresh work already underway.
 - One fetch is in flight at a time. One or more triggers arriving mid-flight supersede its result and start one fresh fetch when it completes.
 - A GitHub change during a fetch can appear on the following fetch.

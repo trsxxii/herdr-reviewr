@@ -1,7 +1,7 @@
 ---
 Status: Current
 Created: 2026-06-23
-Last edited: 2026-07-17
+Last edited: 2026-07-18
 ---
 
 # herdr host
@@ -169,7 +169,7 @@ Send and tracking:
 - A failed clipboard utility or `herdr agent send` reports the error. The comments stay in the list.
 - A turn shorter than one poll interval, or one whose start is masked by a transient `unknown` status, is missed. `last-turn` then shows the changes since the last observed turn start. It never shows lines the agent did not write.
 - A crash mid-snapshot costs at most one failed refresh. Ref updates are atomic. Leftover locks are cleared before the next snapshot and on every exit path.
-- Two sidebars on one worktree write the same baseline ref. Both compute the same baseline, so last-writer-wins is harmless.
+- Two sidebars on one worktree write the same baseline ref. Each samples on its own clock, so their snapshots of one turn start can differ by the edits between them. Last-writer-wins keeps the baseline within one poll interval of the turn start.
 
 ## Non-goals
 

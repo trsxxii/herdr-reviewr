@@ -1,7 +1,7 @@
 ---
-Status: Current
+Status: Draft
 Created: 2026-07-10
-Last edited: 2026-07-17
+Last edited: 2026-07-18
 ---
 
 # Configuration
@@ -72,7 +72,7 @@ The `PR` tab's fetch is not a config read. It runs under the sidebar's current s
 
 `--resolve-plugin-config` prints the validated config as JSON, every key included, the keymap resolved.
 
-Work started under a valid snapshot may finish after the config becomes invalid. Its result is discarded.
+Work started under a valid snapshot may finish after the config becomes invalid. Its result is discarded. A turn baseline ref already written stays: it records a true observation of the worktree (`herdr-host.md`).
 
 An action or event reads the file once at invocation. A later file change affects the next invocation, not work already started (→ CFG-ONE-SNAPSHOT).
 

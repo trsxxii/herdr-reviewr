@@ -1,7 +1,7 @@
 ---
-Status: Current
+Status: Draft
 Created: 2026-06-23
-Last edited: 2026-07-17
+Last edited: 2026-07-18
 ---
 
 # TUI
@@ -69,10 +69,14 @@ Every layout change preserves the focused pane and each pane's cursor or selecti
 ### Refresh
 
 - The view polls the worktree every `N` seconds, default 2, configurable.
-- A poll reloads the file list and the open diff, keeping the selected file and scroll where the file still exists.
-- Entering a file tab paints the tab's stashed state in the switch frame, exactly as it was left. Its reload runs right after and paints one frame later — stale for one frame, never wrong (`overview.md` Continuity). A first-ever visit has no stash to paint and loads before its frame, so the header never describes a tab that shows nothing.
-- While a comment is being composed, the input and its diff are frozen. The file list still updates.
-- `r` forces an immediate reload.
+- A poll refreshes the file list and the open diff off the frame loop. The result reconciles into the view, keeping the selected file and scroll where the file still exists.
+- A result lands whole: the header counts and the list they head come from one refresh.
+- A result lands only when the view it described is still current: the same repository, tab, scope, and scope base. The scope base is the branch base or the turn baseline. A result that no longer matches is discarded, and a newer request supersedes an older one.
+- Entering a file tab paints the tab's stashed state in the switch frame, exactly as it was left. A refresh lands behind it — stale until it lands, never wrong (`overview.md` Continuity). A first-ever visit has no stash to paint and loads before its frame, so the header never describes a tab that shows nothing.
+- A scope switch rebuilds the changed set before its frame, so the list never shows another scope's files under the new scope's label. A `last-turn` switch diffs against the most recently observed baseline. The tree and its annotations refresh behind it.
+- While a comment is being composed, the input and its diff are frozen. A result that lands mid-composition leaves both untouched, however early its refresh began. The file list still updates.
+- `r` triggers an immediate refresh. Its result lands like a poll's.
+- A refresh in flight longer than 150ms shows a one-cell `⟳` in a reserved cell at the end of the tab strip, so nothing shifts when it appears. The glyph clears when the result lands or is discarded. A faster refresh shows nothing. The rule covers every tab: the `PR` tab's fetch is its refresh.
 - The `PR` tab fetches on its own cadence (`pr-tab.md`), separate from the worktree poll.
 - Refresh uses no herdr events. The same poll samples the agent's status for the `last-turn` baseline (`herdr-host.md`).
 - In `last-turn` scope, before a turn start is observed, `Changes` shows `waiting for the agent's next turn`, never a stale or whole-worktree diff. `All files` keeps its content.
@@ -82,7 +86,9 @@ Every layout change preserves the focused pane and each pane's cursor or selecti
 - A poll never touches the comment input or saved comments. Draft text and caret survive every refresh.
 - A config error and its automatic-reload remedy replace the view. Saved comments always survive. An open composer or comments list survives with its tab's state. Recovery restores them.
 - A poll that finds no change makes no visible update: no flicker, no lost selection or scroll.
-- Git, clipboard, and agent-send calls run synchronously between frames. A very large diff or a hung send can briefly block input. Moving them off the draw path is a v1 non-goal.
+- A refresh in flight never delays input or a paint.
+- Opening a file builds its diff on the paint path. A first open of a very large file can briefly block.
+- Clipboard and agent-send calls run synchronously between frames. A hung send can briefly block input.
 
 ## Non-goals
 
