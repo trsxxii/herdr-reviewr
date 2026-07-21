@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.22.0] — 2026-07-21
+
 ### Added
 - **Find in file.** `Ctrl+F` searches the open file. Every match lights up, and `enter` and the
   arrows step the cursor between them, expanding a fold to reveal a hidden match. The query is a
