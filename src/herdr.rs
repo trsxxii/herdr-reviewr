@@ -137,8 +137,12 @@ fn candidates<'a>(
 }
 
 /// Write literal text into the agent pane's input, without submitting.
+///
+/// Uses `pane send-text`, not the agent-level send: herdr 0.7.5 replaced `agent send` with
+/// the logical-key `agent send-keys`, while `pane send-text` has carried the literal-text,
+/// no-Enter semantics unchanged since 0.7.0 (`docs/herdr-api-notes.md`).
 pub fn send_text(pane: &str, text: &str) -> Result<()> {
-    herdr(&["agent", "send", pane, text])?;
+    herdr(&["pane", "send-text", pane, text])?;
     Ok(())
 }
 
