@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.22.1] — 2026-07-22
+
+### Fixed
+- **Send works on herdr 0.7.5.** herdr 0.7.5 removed `agent send`, so pressing send failed and
+  the comments stayed put (#28). Comments now go through `pane send-text` — the same
+  literal-text, no-Enter write — which works on every supported herdr from 0.7.0 up.
+
 ## [0.22.0] — 2026-07-21
 
 ### Added
