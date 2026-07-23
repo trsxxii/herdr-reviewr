@@ -1400,6 +1400,7 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
         A::MovePage => ("PageUp PageDown".into(), ""),
         A::ExpandDir => ("→".into(), "expand"),
         A::CollapseDir => ("←".into(), "collapse"),
+        A::OpenEditor => (hint(K::Edit), "edit file"),
         A::TogglePane => {
             return ("tab".into(), if app.focus == Focus::Files { "diff" } else { "files" }.into());
         }

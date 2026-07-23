@@ -126,6 +126,7 @@ The keys below are defaults. You can rebind every action, even to several keys a
 | `Ctrl+U` `Ctrl+D` | Move a half-page |
 | `Tab` | Switch focus between the navigator and read pane |
 | `→` `←` | Expand or collapse a directory or fold, or scroll the diff sideways |
+| `e` | Open the selected file in your editor (Files pane) — see [Editor](#editor) |
 | `/` | Search files and code from any tab — type to filter, then pick a result with `↑` `↓` and open it with `enter` |
 | `Ctrl+F` | Find in the open file — every match lights up, `enter` and the arrows step between them |
 | `w` | Toggle line wrap |
@@ -236,6 +237,7 @@ toggle_placement = "overlay"
 toggle_direction = "down"
 auto_open = false
 github_host = "github.example.com"
+editor = "code --wait"
 
 [keybindings]
 comment = ["c", "ㅊ"]
@@ -290,6 +292,19 @@ base_branches = ["develop", "main", "master"]
 
 `--base <ref>` wins over the list and takes any rev — a branch, a tag, a SHA. When nothing in
 the list resolves, the branch `origin/HEAD` names is the fallback.
+
+### Editor
+
+`e` on a file row in the Files pane (Changes or All files) opens it full-screen in your editor:
+
+```toml
+editor = "code --wait"
+```
+
+Unset, it falls back to `$EDITOR`. Neither set, `e` reports a status error and opens nothing.
+The command is split on whitespace and the file path is appended, no shell involved. `e` on a
+directory row does nothing; `e` on the diff pane still edits the comment under the cursor.
+Closing the editor refreshes the file list and diff, so an edit made there shows up.
 
 ### Keybindings
 
