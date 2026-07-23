@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.23.0] — 2026-07-23
+
+### Added
+- **GitLab and Azure DevOps in the PR tab.** The read-only PR tab now mirrors merge requests on
+  GitLab and pull requests on Azure DevOps, not only GitHub. GitLab works on gitlab.com and one
+  self-hosted instance set with `gitlab_host`, through the `glab` CLI. Azure DevOps works on
+  dev.azure.com, the `*.visualstudio.com` organization hosts, and one self-hosted server set with
+  `azure_devops_host`, through `az` with the azure-devops extension. Each forge fills the same
+  snapshot and shows its own vocabulary — merge request `!42` on GitLab, pull request `#12` on
+  Azure DevOps (#29, #30).
+
 ## [0.22.1] — 2026-07-22
 
 ### Fixed
