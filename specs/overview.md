@@ -1,7 +1,7 @@
 ---
 Status: Current
 Created: 2026-06-23
-Last edited: 2026-07-21
+Last edited: 2026-07-23
 ---
 
 # herdr-reviewr
@@ -42,7 +42,7 @@ to move the work forward.
 
 - The `Changes` view: a changed-files list per scope plus the diff viewer (`diff-view.md`).
 - The `All files` tab: a repo tree and content viewer, annotated with the active scope's changes (`file-list.md`, `diff-view.md`).
-- The `PR` tab: pull-request identity, state, checks, and comments, read from GitHub, with external links only (`forge-host.md`, `pr-tab.md`).
+- The `PR` tab: pull-request identity, state, checks, and comments, read from the repository's forge, with external links only (`forge-host.md`, `pr-tab.md`).
 - Three scopes: `uncommitted`, `branch`, `last-turn` (`review-model.md`).
 - Comments anchored to `path:start-end`, held in memory for the review pass.
 - Export of all comments to the agent input or the clipboard.
@@ -71,7 +71,7 @@ State divides into three kinds:
 - Authored state is what the reviewer wrote: comments and the draft being typed.
 - Place state is where the reviewer's attention is: the active tab and scope, the open file, every
   cursor and scroll, folds, a selection, the layout, the footer's shortcut expansion.
-- Derived state is everything recomputed from git or GitHub: changesets, trees, diffs, the PR
+- Derived state is everything recomputed from git or the forge: changesets, trees, diffs, the PR
   snapshot.
 
 Authored state follows O3. Only the reviewer removes it.
@@ -90,7 +90,7 @@ Newer content paints over the old in place, reconciling the reviewer's place as 
 | Always true                                                                                                                                                |
 | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | The sidebar never commits, stages, or mutates the worktree, the index, or any branch. Its one git write is the private baseline ref under `refs/reviewr/`.  |
-| The sidebar never writes to GitHub. It reads the pull request through `gh` and opens links in the browser, nothing more.                                    |
+| The sidebar never writes to a forge. It reads the pull request through the forge's official CLI and opens links in the browser, nothing more.               |
 | A comment, saved or being typed, is never lost to a refresh or the agent's edits. Only the user removes it.                                                 |
 | Comments leave only by an explicit export, to the agent pane or the clipboard.                                                                              |
 | The crate forbids `unsafe`.                                                                                                                                 |

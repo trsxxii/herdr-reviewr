@@ -77,8 +77,13 @@ fn an_unusable_upstream_falls_back_to_origin() {
     repo.git(&["remote", "add", "upstream", repo.path().to_str().unwrap()]);
     assert_target(&selected().repository, "github.com", "acme", "widgets");
 
-    repo.git(&["remote", "set-url", "upstream", "https://gitlab.com/other/widgets.git"]);
+    repo.git(&["remote", "set-url", "upstream", "https://bitbucket.org/other/widgets.git"]);
     assert_target(&selected().repository, "github.com", "acme", "widgets");
+
+    // A GitLab upstream is a recognized forge repository, so it wins target selection
+    // (`specs/forge-host.md`).
+    repo.git(&["remote", "set-url", "upstream", "https://gitlab.com/other/widgets.git"]);
+    assert_target(&selected().repository, "gitlab.com", "other", "widgets");
 
     repo.git(&["remote", "set-url", "upstream", "https://github.com/acme"]);
     assert_target(&selected().repository, "github.com", "acme", "widgets");

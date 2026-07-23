@@ -9,6 +9,7 @@
 //! [`app::App`] methods and renders with [`ui`].
 
 pub mod app;
+pub mod azure_devops;
 pub mod browser;
 pub mod config;
 pub mod diff;
@@ -16,6 +17,7 @@ pub mod export;
 pub mod file_list;
 pub mod forge;
 pub mod git;
+pub mod gitlab;
 pub mod herdr;
 pub mod highlight;
 pub mod keymap;
@@ -133,10 +135,16 @@ fn ready_app(cfg: &Config, plugin_config: PluginConfig) -> App {
 /// A transient status message (e.g. "sent 3 comments") fades after this long idle.
 const STATUS_TTL: Duration = Duration::from_secs(4);
 
-/// While the `PR` tab is active, refetch GitHub at least this often — a fallback for forge-side
-/// changes with no local signal (a reviewer's comment). Local pushes and `gh` PR actions refresh
-/// sooner, on the agent's turn-end, so this cadence is the slow safety net (specs/forge-host.md).
+/// While the `PR` tab is active, refetch the forge at least this often — a fallback for
+/// forge-side changes with no local signal (a reviewer's comment). Local pushes and forge PR
+/// actions refresh sooner, on the agent's turn-end, so this cadence is the slow safety net
+/// (specs/forge-host.md).
 const PR_POLL: Duration = Duration::from_mins(1);
+
+/// How long an in-flight PR fetch may run before a refresh trigger stops waiting on it.
+/// Generous against slow forges, short enough that the fallback poll recovers a wedged
+/// fetch within one cycle.
+const FETCH_HANG: Duration = Duration::from_mins(1);
 /// How long an ambient refresh must stay in flight before the tab-strip glyph shows —
 /// routine refreshes stay invisible; a commanded one (`r`) shows immediately (specs/tui.md).
 const INDICATOR_DELAY: Duration = Duration::from_millis(200);
@@ -172,6 +180,9 @@ struct PrRefresh {
     current_input: Option<crate::forge::PrFetchInput>,
     pending: Option<TaggedPr>,
     fetch_needed: bool,
+    /// An ambient trigger rode the in-flight fetch; one fresh fetch follows the ridden
+    /// result so a remote change that read predates still paints promptly.
+    trailing: bool,
 }
 
 /// Owns the active probe or fetch until its worker exits; start guards keep all PR work serialized.
@@ -188,6 +199,8 @@ struct PrCoordinator {
 struct ActiveFetch {
     tag: (u64, u64),
     cancelled: Arc<AtomicBool>,
+    /// When the fetch dispatched — the hang bound in `request_refresh` measures from it.
+    started: Instant,
 }
 
 /// The config and layout that produced the visible frame. Input dispatches only while these
@@ -254,6 +267,34 @@ impl PrCoordinator {
         self.probe_pending = true;
     }
 
+    /// Start a refresh, or ride the one already underway. A commanded refresh cancels the
+    /// in-flight fetch and starts fresh. The ambient triggers — tab entry, a turn end, the
+    /// fallback timer — join a fetch in flight or a completion awaiting its probe, and arm
+    /// one trailing fetch behind it: the ridden result still paints (nothing waits on a
+    /// repeated fetch), and the trailing fetch supersedes it with a read the trigger is
+    /// guaranteed to predate — a remote-only change is never lost to the fallback timer
+    /// (specs/forge-host.md). A fetch past the hang bound is abandoned instead of joined,
+    /// so a reader that died without sending a completion can never wedge the tab — its
+    /// zombie completion, if one ever lands, fails the tag check.
+    fn request_refresh(&mut self, kind: crate::app::RefreshKind) {
+        self.wait_started.get_or_insert_with(Instant::now);
+        let hung =
+            self.active_fetch.as_ref().is_some_and(|active| active.started.elapsed() >= FETCH_HANG);
+        if kind == crate::app::RefreshKind::Ambient
+            && !hung
+            && (self.active_fetch.is_some() || self.refresh.pending.is_some())
+        {
+            self.refresh.trailing = true;
+            return;
+        }
+        self.cancel_fetch();
+        if hung {
+            self.active_fetch = None;
+        }
+        self.refresh.trigger();
+        self.probe_pending = true;
+    }
+
     fn config_changed(&mut self, active: bool) {
         self.cancel_fetch();
         self.refresh.config_changed(active);
@@ -284,7 +325,7 @@ impl Drop for PrCoordinator {
     }
 }
 
-/// Cancel the active GitHub fetch and briefly drain matching probe/fetch completions before exit.
+/// Cancel the active forge fetch and briefly drain matching probe/fetch completions before exit.
 fn drain_pr_shutdown(
     pr: &mut PrCoordinator,
     probe_rx: &mpsc::Receiver<(
@@ -340,12 +381,20 @@ impl ConfigGate {
 
 impl PrRefresh {
     fn new(ready: bool) -> Self {
-        Self { generation: 1, current_input: None, pending: None, fetch_needed: ready }
+        Self {
+            generation: 1,
+            current_input: None,
+            pending: None,
+            fetch_needed: ready,
+            trailing: false,
+        }
     }
 
     fn trigger(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.fetch_needed = true;
+        // The fresh fetch reads the current remote, satisfying any armed trailing fetch.
+        self.trailing = false;
     }
 
     fn invalidate(&mut self) {
@@ -353,12 +402,14 @@ impl PrRefresh {
         self.current_input = None;
         self.pending = None;
         self.fetch_needed = false;
+        self.trailing = false;
     }
 
     fn config_changed(&mut self, active: bool) {
         self.generation = self.generation.wrapping_add(1);
         self.pending = None;
         self.fetch_needed = active;
+        self.trailing = false;
     }
 
     fn completed(&mut self, completion: TaggedPr, epoch: u64, active: bool) {
@@ -405,7 +456,8 @@ impl PrRefresh {
                 && completion.config_epoch == epoch
                 && completion.input == *input
             {
-                self.fetch_needed = false;
+                // A ridden trigger's trailing fetch dispatches behind the paint.
+                self.fetch_needed = self.trailing;
                 return Some(PrEffect::Apply(completion.view));
             }
             self.fetch_needed = true;
@@ -415,7 +467,9 @@ impl PrRefresh {
 
     fn probe_failed(&mut self, retry_pending: bool) {
         self.pending = None;
-        self.fetch_needed = retry_pending;
+        // An armed trailing fetch survives the failed probe as a plain fetch request, so a
+        // ridden trigger is never silently lost to the fallback timer.
+        self.fetch_needed = retry_pending || std::mem::take(&mut self.trailing);
     }
 
     fn take_fetch(&mut self) -> Option<(u64, crate::forge::PrFetchInput)> {
@@ -424,6 +478,8 @@ impl PrRefresh {
         }
         let input = self.current_input.clone()?;
         self.fetch_needed = false;
+        // Any dispatched fetch reads the current remote — the trailing request is served.
+        self.trailing = false;
         Some((self.generation, input))
     }
 }
@@ -443,7 +499,7 @@ pub fn land_world_completion(
     if completion.turn.as_ref().is_some_and(|t| t.ended) {
         // One fetch per turn, on any tab: the turn may have pushed or merged, and
         // entering the tab then finds fresh work already underway (forge-host.md).
-        app.pr_pending = true;
+        app.request_pr_refresh(crate::app::RefreshKind::Ambient);
     }
     if completion.generation != generation {
         // A superseding job carries reveal=false, so a superseded switch's reveal would
@@ -523,7 +579,7 @@ fn event_loop(
     let poll = cfg.poll;
     let mut last_poll = Instant::now();
     let mut last_pr_poll = Instant::now();
-    // Local input probes and GitHub reads run on workers. A completed fetch is applied only after
+    // Local input probes and forge reads run on workers. A completed fetch is applied only after
     // a fresh probe proves its complete input still matches (`specs/forge-host.md`).
     let (probe_tx, probe_rx) =
         mpsc::channel::<(u64, Result<crate::forge::PrFetchInput, crate::forge::PrInputError>)>();
@@ -557,7 +613,7 @@ fn event_loop(
     let mut last_status = String::new();
     // Fetch the PR snapshot as soon as the panel opens, not on first switching to the tab, so the
     // tab is already populated when the user gets there (specs/forge-host.md).
-    app.pr_pending = false;
+    app.pr_pending = None;
     let result: Result<()> = (|| {
         while !app.should_quit {
             if let Ok((epoch, target, mut recovered)) = recovery_rx.try_recv() {
@@ -760,16 +816,17 @@ fn event_loop(
                 };
             }
 
-            // Record user and fallback refreshes before consuming worker results. A trigger that
-            // arrived during completion verification supersedes that completion before it can
-            // paint, while the generation still coalesces repeated triggers into one fresh fetch.
+            // Record user and fallback refreshes before consuming worker results. A commanded
+            // trigger that arrived during completion verification supersedes that completion
+            // before it can paint, while the generation still coalesces repeated triggers into
+            // one fresh fetch. Ambient triggers ride in-flight work and arm a trailing fetch
+            // (`request_refresh`).
             let fallback_poll = app.tab == crate::app::Tab::Pr && last_pr_poll.elapsed() >= PR_POLL;
-            if app.pr_pending || fallback_poll {
-                app.pr_pending = false;
+            let refresh =
+                app.pr_pending.take().or(fallback_poll.then_some(crate::app::RefreshKind::Ambient));
+            if let Some(kind) = refresh {
                 last_pr_poll = Instant::now();
-                pr.refresh.trigger();
-                pr.wait_started.get_or_insert_with(Instant::now);
-                pr.probe_pending = true;
+                pr.request_refresh(kind);
             }
 
             // A fetch completion waits for a fresh local-input probe before it may paint.
@@ -852,8 +909,11 @@ fn event_loop(
             {
                 let (tx, repo, epoch) = (pr_tx.clone(), app.repo.clone(), config_epoch);
                 let cancelled = Arc::new(AtomicBool::new(false));
-                pr.active_fetch =
-                    Some(ActiveFetch { tag: (generation, epoch), cancelled: cancelled.clone() });
+                pr.active_fetch = Some(ActiveFetch {
+                    tag: (generation, epoch),
+                    cancelled: cancelled.clone(),
+                    started: Instant::now(),
+                });
                 thread::spawn(move || {
                     let view = crate::forge::fetch_cancellable(&repo, &input, &cancelled);
                     let _ = tx.send(TaggedPr { generation, config_epoch: epoch, input, view });
@@ -1041,6 +1101,14 @@ fn apply_pr_probe_result(
             true
         }
         Ok(input) => {
+            // The display noun follows the resolved forge (`specs/forge-providers.md`). A forge
+            // change is a target change, so `observed` clears any painted snapshot in the same
+            // step and the noun can never caption another forge's PR. A target that resolves to
+            // no forge takes the default noun rather than keeping the last one.
+            app.pr_forge = match &input.repository {
+                crate::git::RepositoryIdentity::Repository(target) => target.forge(),
+                _ => crate::git::Forge::default(),
+            };
             match pr.refresh.observed(input, config_epoch) {
                 Some(PrEffect::Clear) => {
                     app.clear_pr();
@@ -1084,7 +1152,7 @@ fn reconcile_plugin_config(
 
     let bases_changed = previous.base_branches() != current.base_branches();
     let file_changed = bases_changed || previous.theme() != current.theme();
-    let pr_changed = bases_changed || previous.github_host() != current.github_host();
+    let pr_changed = bases_changed || previous.forge_hosts() != current.forge_hosts();
     if pr_changed {
         pr.config_changed(app.tab == crate::app::Tab::Pr);
     }
@@ -1149,7 +1217,7 @@ fn apply_plugin_config_observation(
             } else if changed {
                 let current = app.plugin_config().expect("ready config");
                 if current.base_branches() != next.base_branches()
-                    || current.github_host() != next.github_host()
+                    || current.forge_hosts() != next.forge_hosts()
                 {
                     *epoch = epoch.wrapping_add(1);
                 }
@@ -1296,7 +1364,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> 
         match (action, key.code) {
             (Some(K::Quit), _) => app.should_quit = true,
             (Some(K::Refresh), _) => {
-                app.pr_pending = true;
+                app.request_pr_refresh(crate::app::RefreshKind::Forced);
                 app.refresh_commanded = true;
             }
             (Some(K::TabChanges), _) => app.set_tab(crate::app::Tab::Changes)?,
@@ -1611,11 +1679,13 @@ pub fn handle_mouse(
 
 #[cfg(test)]
 mod refresh_tests {
+    use std::time::Instant;
+
     use super::{
-        ActiveFetch, PaintedFrameSnapshot, PrCoordinator, PrEffect, PrRefresh, TaggedPr,
-        apply_plugin_config_observation, apply_pr_probe_result, drain_pr_shutdown, glyph_clears,
-        handle_blocked_event, handle_resize, ready_app, schedule_poll_probe, world_indicator,
-        world_wake,
+        ActiveFetch, FETCH_HANG, PaintedFrameSnapshot, PrCoordinator, PrEffect, PrRefresh,
+        TaggedPr, apply_plugin_config_observation, apply_pr_probe_result, drain_pr_shutdown,
+        glyph_clears, handle_blocked_event, handle_resize, ready_app, schedule_poll_probe,
+        world_indicator, world_wake,
     };
     use crate::app::{App, Tab};
 
@@ -1699,6 +1769,59 @@ mod refresh_tests {
     }
 
     #[test]
+    fn an_ambient_refresh_rides_the_in_flight_fetch_and_a_commanded_one_supersedes_it() {
+        let mut pr = PrCoordinator::new(true);
+        pr.refresh.current_input = Some(input("head"));
+        let (generation, _) = pr.refresh.take_fetch().expect("startup fetch");
+        let in_flight = |generation| ActiveFetch {
+            tag: (generation, 0),
+            cancelled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            started: Instant::now(),
+        };
+        pr.active_fetch = Some(in_flight(generation));
+
+        // Tab entry while the startup fetch runs: the generation holds, so that fetch's
+        // completion still paints instead of being discarded and repeated.
+        pr.request_refresh(crate::app::RefreshKind::Ambient);
+        assert_eq!(pr.refresh.generation, generation, "the ambient trigger joins");
+        assert!(pr.refresh.take_fetch().is_none(), "no fetch starts while the ride is on");
+
+        // The ridden completion paints, then exactly one trailing fetch follows it, so a
+        // remote change the ridden read predates is not lost to the fallback timer.
+        pr.active_fetch = None;
+        pr.refresh.completed(
+            TaggedPr { generation, config_epoch: 0, input: input("head"), view: no_pr() },
+            0,
+            true,
+        );
+        let effect = pr.refresh.observed(input("head"), 0);
+        assert!(matches!(effect, Some(PrEffect::Apply(_))), "the ridden result paints");
+        let (trailing_generation, _) = pr.refresh.take_fetch().expect("the trailing fetch");
+        assert!(pr.refresh.take_fetch().is_none(), "the trailing fetch is one, not a loop");
+        pr.active_fetch = Some(in_flight(trailing_generation));
+
+        // The user's refresh key supersedes: the in-flight fetch cancels, a fresh
+        // generation and fetch replace it.
+        let generation = trailing_generation;
+        pr.request_refresh(crate::app::RefreshKind::Forced);
+        assert_ne!(pr.refresh.generation, generation);
+        let cancelled = pr.active_fetch.as_ref().unwrap().cancelled.clone();
+        assert!(cancelled.load(std::sync::atomic::Ordering::Acquire), "the old fetch cancels");
+        assert!(pr.refresh.take_fetch().is_some(), "the commanded refresh starts fresh work");
+
+        // A fetch past the hang bound no longer blocks even an ambient trigger: it is
+        // abandoned, so a reader that died without a completion cannot wedge the tab.
+        let generation = pr.refresh.generation;
+        let mut hung = in_flight(generation);
+        hung.started = Instant::now().checked_sub(FETCH_HANG).unwrap();
+        pr.active_fetch = Some(hung);
+        pr.request_refresh(crate::app::RefreshKind::Ambient);
+        assert!(pr.active_fetch.is_none(), "the hung fetch is abandoned");
+        assert_ne!(pr.refresh.generation, generation);
+        assert!(pr.refresh.take_fetch().is_some(), "a replacement fetch starts");
+    }
+
+    #[test]
     fn a_probe_that_changes_pr_rows_requires_a_repaint_before_input() {
         let mut app = App::new(std::path::PathBuf::from("."), Scope::Uncommitted, None);
         let mut coordinator = PrCoordinator::new(true);
@@ -1708,6 +1831,31 @@ mod refresh_tests {
         assert!(apply_pr_probe_result(&mut app, &mut coordinator, Ok(moved.clone()), 0));
         assert!(matches!(app.pr, PrView::Pending));
         assert!(!apply_pr_probe_result(&mut app, &mut coordinator, Ok(moved), 0));
+    }
+
+    #[test]
+    fn a_forge_swap_on_the_same_path_clears_the_snapshot_and_never_paints_it() {
+        let mut app = App::new(std::path::PathBuf::from("."), Scope::Uncommitted, None);
+        app.apply_pr(no_pr()); // a resolved GitHub view is on screen
+        let mut coordinator = PrCoordinator::new(true);
+        coordinator.refresh.current_input = Some(input("head"));
+
+        // The origin moved from github.com/acme/widgets to gitlab.com/acme/widgets. The path
+        // is identical, but the repository target is forge-qualified (`specs/forge-host.md`),
+        // so the probe observes a different target: the view clears instead of keeping a
+        // GitHub snapshot painted over a GitLab origin.
+        let mut swapped = input("head");
+        swapped.repository = RepositoryIdentity::Repository(
+            crate::git::RepoTarget::with_path(
+                crate::git::Forge::GitLab,
+                "gitlab.com",
+                &["acme", "widgets"],
+            )
+            .unwrap(),
+        );
+        assert!(apply_pr_probe_result(&mut app, &mut coordinator, Ok(swapped), 0));
+        assert!(matches!(app.pr, PrView::Pending), "the stale view cleared");
+        assert_eq!(app.pr_forge, crate::git::Forge::GitLab, "display strings follow the forge");
     }
 
     #[test]
@@ -2002,6 +2150,21 @@ mod refresh_tests {
     }
 
     #[test]
+    fn a_failed_probe_keeps_the_ridden_triggers_trailing_fetch() {
+        let a = input("a");
+        let mut refresh = PrRefresh::new(true);
+        refresh.observed(a, 0);
+        let _ = refresh.take_fetch().unwrap();
+
+        // An ambient trigger rode the in-flight fetch, then its verifying probe failed with
+        // nothing else pending: the trailing fetch survives as a plain request instead of
+        // waiting on the fallback timer.
+        refresh.trailing = true;
+        refresh.probe_failed(false);
+        assert!(refresh.take_fetch().is_some(), "the trailing fetch survives the failed probe");
+    }
+
+    #[test]
     fn an_unproven_repository_replaces_the_snapshot_and_blocks_a_stale_fetch() {
         let mut app = App::new(std::path::PathBuf::from("."), Scope::Uncommitted, None);
         let mut coordinator = PrCoordinator::new(true);
@@ -2090,7 +2253,11 @@ mod refresh_tests {
     fn cancelling_a_fetch_retains_real_worker_ownership_until_completion() {
         let cancelled = Arc::new(AtomicBool::new(false));
         let mut coordinator = PrCoordinator::new(true);
-        coordinator.active_fetch = Some(ActiveFetch { tag: (7, 3), cancelled: cancelled.clone() });
+        coordinator.active_fetch = Some(ActiveFetch {
+            tag: (7, 3),
+            cancelled: cancelled.clone(),
+            started: Instant::now(),
+        });
 
         coordinator.config_changed(true);
 
@@ -2101,8 +2268,11 @@ mod refresh_tests {
     #[test]
     fn repository_probe_waits_for_the_active_fetch_to_exit() {
         let mut coordinator = PrCoordinator::new(true);
-        coordinator.active_fetch =
-            Some(ActiveFetch { tag: (7, 3), cancelled: Arc::new(AtomicBool::new(false)) });
+        coordinator.active_fetch = Some(ActiveFetch {
+            tag: (7, 3),
+            cancelled: Arc::new(AtomicBool::new(false)),
+            started: Instant::now(),
+        });
 
         assert!(!coordinator.can_start_probe(true));
         coordinator.active_fetch = None;
@@ -2125,8 +2295,11 @@ mod refresh_tests {
         let fetch_cancelled = Arc::new(AtomicBool::new(false));
         let mut coordinator = PrCoordinator::new(true);
         coordinator.active_probe_epoch = Some(3);
-        coordinator.active_fetch =
-            Some(ActiveFetch { tag: (7, 3), cancelled: fetch_cancelled.clone() });
+        coordinator.active_fetch = Some(ActiveFetch {
+            tag: (7, 3),
+            cancelled: fetch_cancelled.clone(),
+            started: Instant::now(),
+        });
         let (probe_tx, probe_rx) = mpsc::channel();
         let (fetch_tx, fetch_rx) = mpsc::channel();
         probe_tx.send((3, Ok(input("probe")))).unwrap();

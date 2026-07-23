@@ -1505,6 +1505,87 @@ fn a_retry_notice_stays_visible_above_a_scrolled_pr_body() {
 }
 
 #[test]
+fn a_gitlab_repository_renders_merge_request_nouns_and_remedies() {
+    use herdr_reviewr::forge::{PrSnapshot, PrView};
+    use herdr_reviewr::git::Forge;
+    let r = Repo::init();
+    r.write("x.rs", "y\n");
+    r.commit_all("init");
+    let mut app = app_on(&r);
+    app.set_tab(Tab::Pr).unwrap();
+    app.pr_forge = Forge::GitLab;
+
+    // The empty state speaks the forge's noun (`specs/forge-providers.md`).
+    app.apply_pr(PrView::NoPr);
+    let out = render(&app);
+    assert!(out.contains("No merge request yet"), "GitLab empty state:\n{out}");
+
+    // The chip uses GitLab's reference form.
+    app.apply_pr(PrView::Pr(Box::new(PrSnapshot { number: 42, ..common::pr_snapshot() })));
+    let out = render(&app);
+    assert!(out.contains("!42"), "MR reference form:\n{out}");
+    assert!(!out.contains("#42"), "no GitHub reference form on GitLab:\n{out}");
+
+    // Each failure names its own CLI and login command (`specs/forge-host.md`).
+    app.apply_pr(PrView::NoCli(Forge::GitLab));
+    let out = render(&app);
+    assert!(out.contains("Install `glab`"), "glab install step:\n{out}");
+    app.apply_pr(PrView::NotAuthed(Forge::GitLab, "git.corp.example".to_string()));
+    let out = render(&app);
+    assert!(out.contains("glab auth login --hostname git.corp.example"), "login remedy:\n{out}");
+}
+
+#[test]
+fn an_unsupported_host_points_at_the_per_forge_host_keys() {
+    use herdr_reviewr::forge::PrView;
+    let r = Repo::init();
+    r.write("x.rs", "y\n");
+    r.commit_all("init");
+    let mut app = app_on(&r);
+    app.set_tab(Tab::Pr).unwrap();
+    app.apply_pr(PrView::UnsupportedHost("code.corp.example".to_string()));
+    let out = render(&app);
+    assert!(out.contains("code.corp.example"), "the host is named:\n{out}");
+    assert!(out.contains("github_host"), "GitHub key offered:\n{out}");
+    assert!(out.contains("gitlab_host"), "GitLab key offered:\n{out}");
+    assert!(out.contains("azure_devops_host"), "Azure DevOps key offered:\n{out}");
+}
+
+#[test]
+fn an_azure_devops_repository_renders_pr_nouns_and_remedies() {
+    use herdr_reviewr::forge::{PrSnapshot, PrView};
+    use herdr_reviewr::git::Forge;
+    let r = Repo::init();
+    r.write("x.rs", "y\n");
+    r.commit_all("init");
+    let mut app = app_on(&r);
+    app.set_tab(Tab::Pr).unwrap();
+    app.pr_forge = Forge::AzureDevOps;
+
+    // The empty state speaks the forge's noun (`specs/forge-providers.md`).
+    app.apply_pr(PrView::NoPr);
+    let out = render(&app);
+    assert!(out.contains("No pull request yet"), "Azure DevOps empty state:\n{out}");
+
+    // The chip uses the `#` reference form.
+    app.apply_pr(PrView::Pr(Box::new(PrSnapshot { number: 12, ..common::pr_snapshot() })));
+    let out = render(&app);
+    assert!(out.contains("#12"), "PR reference form:\n{out}");
+
+    // Each failure names its own CLI, extension, and login command (`specs/forge-host.md`).
+    app.apply_pr(PrView::NoCli(Forge::AzureDevOps));
+    let out = render(&app);
+    assert!(out.contains("Install `az`"), "az install step:\n{out}");
+    app.apply_pr(PrView::NoExtension(Forge::AzureDevOps));
+    let out = render(&app);
+    assert!(out.contains("az extension add --name azure-devops"), "extension install step:\n{out}");
+    app.apply_pr(PrView::NotAuthed(Forge::AzureDevOps, "dev.azure.com".to_string()));
+    let out = render(&app);
+    assert!(out.contains("`az login`"), "login remedy:\n{out}");
+    assert!(out.contains("az devops login"), "the PAT alternative is offered:\n{out}");
+}
+
+#[test]
 fn a_short_narrow_pr_pane_keeps_the_retry_action_and_one_body_row() {
     use herdr_reviewr::forge::{PrSnapshot, PrView};
     let r = Repo::init();
@@ -1514,7 +1595,10 @@ fn a_short_narrow_pr_pane_keeps_the_retry_action_and_one_body_row() {
     app.set_tab(Tab::Pr).unwrap();
     app.pr =
         PrView::Pr(Box::new(PrSnapshot { body: "steady body".into(), ..common::pr_snapshot() }));
-    app.apply_pr(PrView::NotAuthed("github.example.com".to_string()));
+    app.apply_pr(PrView::NotAuthed(
+        herdr_reviewr::git::Forge::GitHub,
+        "github.example.com".to_string(),
+    ));
 
     let out = dump(&render_size(&app, 30, 7));
     assert!(out.contains("Not signed"), "the failure state remains visible:\n{out}");

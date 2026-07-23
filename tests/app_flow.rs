@@ -2743,7 +2743,10 @@ fn same_input_failure_preserves_any_visible_pr_snapshot_and_remedy() {
     let no_pr = PrView::NoPr;
     app.apply_pr(no_pr.clone());
 
-    app.apply_pr(PrView::NotAuthed("github.example.com".to_string()));
+    app.apply_pr(PrView::NotAuthed(
+        herdr_reviewr::git::Forge::GitHub,
+        "github.example.com".to_string(),
+    ));
 
     assert_eq!(app.pr, no_pr);
     assert_eq!(
@@ -3175,7 +3178,10 @@ fn the_pr_remedy_names_the_rebound_refresh_key() {
     app.set_plugin_config(config);
     app.apply_pr(PrView::NoPr);
 
-    app.apply_pr(PrView::NotAuthed("github.example.com".to_string()));
+    app.apply_pr(PrView::NotAuthed(
+        herdr_reviewr::git::Forge::GitHub,
+        "github.example.com".to_string(),
+    ));
 
     assert!(
         app.pr_notice().is_some_and(|notice| notice.ends_with("then press R.")),
@@ -3624,7 +3630,7 @@ fn a_superseded_completion_syncs_the_baseline_but_paints_nothing() {
         "a superseded tag never clears the live in-flight marker"
     );
     assert_eq!(app.entries, before, "a superseded snapshot never paints");
-    assert!(app.pr_pending, "the turn end still schedules the PR refetch");
+    assert!(app.pr_pending.is_some(), "the turn end still schedules the PR refetch");
     assert_eq!(
         app.world_input().turn_baseline.as_deref(),
         Some("cafe"),

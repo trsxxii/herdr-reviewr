@@ -1,9 +1,12 @@
-//! Read-only GitHub access: the pull request's identity, state, checks, and comments.
+//! The shared forge kernel: fetch-input derivation, per-forge dispatch, and the GitHub read.
 //!
 //! See `specs/forge-host.md`. A fetch first derives [`PrFetchInput`] from local Git and one
-//! validated config snapshot, then reads its canonical target through explicitly hosted `gh`
-//! GraphQL calls. It never posts, resolves, re-runs, merges, or otherwise writes to GitHub. The
-//! `PR` tab renders the [`PrSnapshot`] this module produces; degradation is in-band as [`PrView`].
+//! validated config snapshot, then routes to the resolved forge's provider: GitHub reads
+//! inline here through explicitly hosted `gh` GraphQL calls, GitLab and Azure DevOps through
+//! their own modules (`crate::gitlab`, `crate::azure_devops`). The normalized [`PrSnapshot`],
+//! the [`PrView`] failure states with their remedies, and the association helpers every
+//! provider shares all live here. Nothing ever writes to a forge. The `PR` tab renders what
+//! this module produces; degradation is in-band as [`PrView`].
 
 use std::io::Read;
 use std::path::Path;
@@ -29,22 +32,25 @@ pub enum PrView {
     /// `HEAD` is detached, so there is no branch identity to query.
     Detached,
     /// Two or more open PRs contain the published work and no tiebreak decides; the
-    /// count, so the user knows to pick on GitHub.
+    /// count, so the user knows to pick one on the forge.
     Ambiguous(usize),
-    /// `gh` is not on `PATH`.
-    NoGh,
-    /// `gh` is installed but not authenticated for this canonical host.
-    NotAuthed(String),
-    /// Neither `upstream` nor `origin` names a supported hosted Git repository.
-    NeedsGitHubRemote,
-    /// The fallback `origin` names a hosted forge outside the supported GitHub hosts.
+    /// The resolved forge's CLI is not on `PATH`.
+    NoCli(crate::git::Forge),
+    /// The forge CLI is installed but misses the extension its reads require
+    /// (`specs/forge-providers.md` — Azure DevOps).
+    NoExtension(crate::git::Forge),
+    /// The forge CLI is installed but not authenticated for this canonical host.
+    NotAuthed(crate::git::Forge, String),
+    /// Neither `upstream` nor `origin` names a recognized forge repository.
+    NeedsForgeRemote,
+    /// The fallback `origin` names a hosted forge outside the supported forge hosts.
     UnsupportedHost(String),
-    /// The fallback `origin` names a supported host but not an owner/repository path.
+    /// The fallback `origin` names a supported host but not a valid repository path.
     MalformedOrigin(String),
-    /// A local Git read failed before the GitHub fetch could start.
+    /// A local Git read failed before the forge fetch could start.
     GitError(String),
-    /// Any other `gh` failure (rate limit, offline, …); the app freezes the last good view.
-    Error(String),
+    /// Any other forge-CLI failure (rate limit, offline, …); the app freezes the last good view.
+    Error(crate::git::Forge, String),
 }
 
 impl PrView {
@@ -54,38 +60,76 @@ impl PrView {
     /// active `refresh` binding's hint key, so the advertised retry key follows a rebind.
     pub fn retry_remedy(&self, refresh: crate::keymap::Key) -> Option<String> {
         match self {
-            Self::NoGh => {
-                Some(format!("GitHub CLI not found. Install `gh`, then press {refresh}."))
-            }
-            Self::NotAuthed(host) => Some(format!(
-                "Not signed in to {host}. Run `gh auth login --hostname {host}`, then press {refresh}."
+            Self::NoCli(forge) => Some(format!(
+                "{} CLI not found. Install `{}`, then press {refresh}.",
+                forge.display_name(),
+                forge.cli()
+            )),
+            // Total over every forge: one without an extension concept still renders a
+            // retryable message, never a missing remedy the render would trip over.
+            Self::NoExtension(forge) => Some(match extension_hint(*forge) {
+                Some(hint) => format!(
+                    "{} CLI extension missing. Run {hint}, then press {refresh}.",
+                    forge.display_name()
+                ),
+                None => format!(
+                    "{} CLI extension missing. Press {refresh} to retry.",
+                    forge.display_name()
+                ),
+            }),
+            Self::NotAuthed(forge, host) => Some(format!(
+                "Not signed in to {host}. Run {}, then press {refresh}.",
+                login_hint(*forge, host)
             )),
             Self::GitError(message) => {
                 Some(format!("Git read failed: {message}. Press {refresh} to retry."))
             }
-            Self::Error(message) => {
-                Some(format!("GitHub unavailable: {message}. Press {refresh} to retry."))
-            }
+            Self::Error(forge, message) => Some(format!(
+                "{} unavailable: {message}. Press {refresh} to retry.",
+                forge.display_name()
+            )),
             _ => None,
         }
     }
 }
 
-/// One pull request's state, read fresh from GitHub each poll.
+/// The backticked login command the unauthenticated remedy advertises
+/// (`specs/forge-providers.md`). Azure DevOps signs in per account, not per host.
+fn login_hint(forge: crate::git::Forge, host: &str) -> String {
+    match forge {
+        crate::git::Forge::GitHub | crate::git::Forge::GitLab => {
+            format!("`{} auth login --hostname {host}`", forge.cli())
+        }
+        crate::git::Forge::AzureDevOps => {
+            "`az login` (or `az devops login` with a PAT)".to_string()
+        }
+    }
+}
+
+/// The backticked extension-install command the missing-extension remedy advertises
+/// (`specs/forge-providers.md`). Only Azure DevOps' CLI carries a required extension.
+fn extension_hint(forge: crate::git::Forge) -> Option<&'static str> {
+    match forge {
+        crate::git::Forge::AzureDevOps => Some("`az extension add --name azure-devops`"),
+        crate::git::Forge::GitHub | crate::git::Forge::GitLab => None,
+    }
+}
+
+/// One pull request's state, read fresh from the forge each poll.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PrSnapshot {
     pub number: u64,
     pub title: String,
     pub url: String,
-    /// The PR description as GitHub returns it, empty when none (`specs/forge-host.md`).
+    /// The PR description as the forge returns it, empty when none (`specs/forge-host.md`).
     pub body: String,
     pub state: PrState,
     pub is_draft: bool,
     /// The PR's head branch name — the candidate that resolved, which may differ from the
     /// worktree's local branch name (`specs/forge-host.md`).
     pub head_ref: String,
-    /// The head branch lives in another repository (GitHub's `isCrossRepository`); shown
-    /// as a marker so a same-named fork PR is visible.
+    /// The head branch lives in another repository — a fork PR; shown as a marker so a
+    /// same-named fork PR is visible.
     pub head_is_fork: bool,
     pub base_ref: String,
     pub merge: Merge,
@@ -93,7 +137,7 @@ pub struct PrSnapshot {
     pub checks: Vec<Check>,
     pub comments: Vec<Comment>,
     /// A capped surface (reviews/comments/threads/checks) had more rows than the 100-row fetch
-    /// returned — the lists shown are a prefix, not the whole set. Drives a "more on GitHub" marker.
+    /// returned — the lists shown are a prefix, not the whole set. Drives a "more on the forge" marker.
     pub truncated: bool,
 }
 
@@ -105,9 +149,9 @@ pub enum PrState {
     Closed,
 }
 
-/// Whether the PR has a merge blocker worth surfacing, folded from GitHub's `mergeable` and
-/// `mergeStateStatus`. Only the actionable blockers are modelled; GitHub's `behind` / `unstable`
-/// / still-`checking` states carry nothing a reviewer acts on, so they fold into `Clean`.
+/// Whether the PR has a merge blocker worth surfacing, folded from each forge's merge-status
+/// fields. Only the actionable blockers are modelled; states carrying nothing a reviewer acts
+/// on — GitHub's `behind` / `unstable` / still-`checking`, for example — fold into `Clean`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Merge {
     Clean,
@@ -198,24 +242,32 @@ impl PrSnapshot {
     }
 }
 
-/// Run explicitly targeted `gh` arguments in `repo` and return stdout or a classified failure.
-fn gh(repo: &Path, host: &str, args: &[&str], cancelled: &AtomicBool) -> Result<String, GhError> {
-    let child = Command::new("gh")
-        .current_dir(repo)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn();
+/// How one forge-CLI invocation failed, before any forge-specific classification.
+#[derive(Debug)]
+enum CliError {
+    /// The CLI binary is not on `PATH`.
+    NotFound,
+    /// The CLI ran and exited non-zero; `stderr` carries its diagnostic.
+    Failed { stderr: String },
+    /// Spawning or waiting failed at the OS level.
+    Io(String),
+    /// The coordinator superseded this fetch mid-flight.
+    Cancelled,
+}
+
+/// Run one prepared forge-CLI command to completion and return its stdout.
+fn run_cli(cmd: &mut Command, cancelled: &AtomicBool) -> Result<String, CliError> {
+    let child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn();
     let mut child = match child {
         Ok(child) => child,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(GhError::NoGh);
+            return Err(CliError::NotFound);
         }
-        Err(error) => return Err(GhError::Other(error.to_string())),
+        Err(error) => return Err(CliError::Io(error.to_string())),
     };
 
-    // Drain both pipes while polling so a large GraphQL response cannot fill a pipe and block
-    // the child before it exits. A superseded config/fetch kills the process; the coordinator
+    // Drain both pipes while polling so a large response cannot fill a pipe and block the
+    // child before it exits. A superseded config/fetch kills the process; the coordinator
     // keeps ownership until this worker reports completion, preserving one real fetch in flight.
     let mut stdout = child.stdout.take().expect("piped stdout");
     let mut stderr = child.stderr.take().expect("piped stderr");
@@ -235,36 +287,119 @@ fn gh(repo: &Path, host: &str, args: &[&str], cancelled: &AtomicBool) -> Result<
         }
         match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) => thread::sleep(Duration::from_millis(20)),
+            Ok(None) => thread::sleep(Duration::from_millis(5)),
             Err(error) => {
                 let _ = child.kill();
                 let _ = child.wait();
                 let _ = stdout_reader.join();
                 let _ = stderr_reader.join();
-                return Err(GhError::Other(error.to_string()));
+                return Err(CliError::Io(error.to_string()));
             }
         }
     };
     let stdout = stdout_reader.join().unwrap_or_default();
     let stderr = stderr_reader.join().unwrap_or_default();
     if cancelled.load(Ordering::Acquire) {
-        return Err(GhError::Other("request cancelled".to_string()));
+        return Err(CliError::Cancelled);
     }
     if status.success() {
         return Ok(String::from_utf8_lossy(&stdout).into_owned());
     }
-    Err(classify_failure(&String::from_utf8_lossy(&stderr), host))
+    Err(CliError::Failed { stderr: String::from_utf8_lossy(&stderr).into_owned() })
+}
+
+/// Run explicitly targeted `gh` arguments in `repo` and return stdout or a classified failure.
+fn gh(repo: &Path, host: &str, args: &[&str], cancelled: &AtomicBool) -> Result<String, GhError> {
+    let mut cmd = Command::new("gh");
+    cmd.current_dir(repo).args(args);
+    run_provider(
+        &mut cmd,
+        cancelled,
+        GhError::NoGh,
+        |stderr| classify_failure(stderr, host),
+        GhError::Other,
+    )
 }
 
 /// Map a failed `gh`'s stderr to a degraded state by its wording — `gh` has no stable exit
 /// codes for these. An unrecognised failure is `Other` → a transient `Error` view.
 fn classify_failure(stderr: &str, host: &str) -> GhError {
     let s = stderr.to_lowercase();
-    if s.contains("not logged") || s.contains("authentication") || s.contains("gh auth login") {
+    if s.contains("not logged")
+        || s.contains("authentication")
+        || s.contains("gh auth login")
+        // The status marker, never a bare `401`: a commit OID or repository path carrying
+        // those digits must not read as an expired token.
+        || reports_status(&s, 401)
+        || s.contains("bad credentials")
+    {
         GhError::NotAuthed(host.to_owned())
     } else {
         GhError::Other(stderr.trim().to_string())
     }
+}
+
+/// Run one provider CLI read and map its failure shapes into the provider's error type:
+/// a missing binary, a classified stderr, and the IO/cancellation tail every provider
+/// folds into its retryable variant.
+pub(crate) fn run_provider<E>(
+    cmd: &mut Command,
+    cancelled: &AtomicBool,
+    not_found: E,
+    classify: impl FnOnce(&str) -> E,
+    other: impl Fn(String) -> E,
+) -> Result<String, E> {
+    match run_cli(cmd, cancelled) {
+        Ok(stdout) => Ok(stdout),
+        Err(CliError::NotFound) => Err(not_found),
+        Err(CliError::Failed { stderr }) => Err(classify(&stderr)),
+        Err(CliError::Io(error)) => Err(other(error)),
+        Err(CliError::Cancelled) => Err(other("request cancelled".to_string())),
+    }
+}
+
+/// Join a provider reader thread, degrading a panic into the caller's retryable error.
+/// Propagating the panic would kill the fetch worker, and the tab would wait on a
+/// completion never sent.
+pub(crate) fn join_read<T, E>(
+    handle: std::thread::ScopedJoinHandle<'_, Result<T, E>>,
+    on_panic: impl FnOnce() -> E,
+) -> Result<T, E> {
+    handle.join().unwrap_or_else(|_| Err(on_panic()))
+}
+
+/// The newest `SURFACE_CAP` of `rows`, which arrive oldest-first — the shared tail cut
+/// behind every surface's cap (`specs/forge-host.md`).
+pub(crate) fn newest_capped<T>(mut rows: Vec<T>) -> Vec<T> {
+    let keep = rows.len().min(SURFACE_CAP);
+    rows.split_off(rows.len() - keep)
+}
+
+/// Each surface reads at most this many rows, never paged to exhaustion
+/// (`specs/forge-host.md`).
+pub(crate) const SURFACE_CAP: usize = 100;
+
+/// Whether the CLI reported HTTP `code` somewhere that means a status: the `(http <code>)`
+/// marker both `glab` and `gh` append to a failed request, or the leading token of an error
+/// line. A commit OID or a repository path that merely contains those digits never qualifies,
+/// so a transport failure stays a retryable error instead of reading as absence.
+pub(crate) fn reports_status(lowercased_stderr: &str, code: u16) -> bool {
+    let code = code.to_string();
+    let marker = lowercased_stderr
+        .split_once("(http ")
+        .and_then(|(_, rest)| rest.split(')').next())
+        .map(str::trim);
+    if marker == Some(code.as_str()) {
+        return true;
+    }
+    lowercased_stderr.lines().any(|line| {
+        let line = line.trim().trim_start_matches("glab: ").trim_start_matches("gh: ");
+        let line = line.trim_start_matches("{\"message\":\"").trim_start_matches('"');
+        // `404 not found` and `http 404` both lead a status line. A URL cannot: `https://` has
+        // no space, and an OID's digits never start the line.
+        let line = line.strip_prefix("http ").unwrap_or(line);
+        line.strip_prefix(&code).is_some_and(|rest| rest.starts_with(' ') || rest.is_empty())
+    })
 }
 
 /// A classified `gh` failure, mapped to a [`PrView`] degraded state.
@@ -279,10 +414,10 @@ enum GhError {
 impl From<GhError> for PrView {
     fn from(e: GhError) -> Self {
         match e {
-            GhError::NoGh => PrView::NoGh,
-            GhError::NotAuthed(host) => PrView::NotAuthed(host),
+            GhError::NoGh => PrView::NoCli(crate::git::Forge::GitHub),
+            GhError::NotAuthed(host) => PrView::NotAuthed(crate::git::Forge::GitHub, host),
             GhError::LocalGit(message) => PrView::GitError(message),
-            GhError::Other(m) => PrView::Error(m),
+            GhError::Other(m) => PrView::Error(crate::git::Forge::GitHub, m),
         }
     }
 }
@@ -323,8 +458,9 @@ fn fetch_input_inner(
     config: &crate::config::PluginConfig,
     verify_repository: bool,
 ) -> Result<PrFetchInput, PrInputError> {
-    let (repository, origin_repository) = crate::git::remote_identities(repo, config.github_host())
-        .map_err(|error| PrInputError::TargetRead(error.0))?;
+    let (repository, origin_repository) =
+        crate::git::remote_identities(repo, &config.forge_hosts())
+            .map_err(|error| PrInputError::TargetRead(error.0))?;
     let crate::git::RepositoryIdentity::Repository(target) = &repository else {
         return Ok(PrFetchInput {
             repository,
@@ -335,7 +471,7 @@ fn fetch_input_inner(
     let local = match crate::git::pr_local(repo, base, config.base_branches()) {
         Ok(local) => local,
         Err(error) => {
-            let (current, _) = crate::git::remote_identities(repo, config.github_host())
+            let (current, _) = crate::git::remote_identities(repo, &config.forge_hosts())
                 .map_err(|read_error| PrInputError::TargetRead(read_error.0))?;
             if current != repository {
                 return Err(PrInputError::TargetRead(
@@ -346,7 +482,7 @@ fn fetch_input_inner(
         }
     };
     let (repository, origin_repository) = if verify_repository {
-        crate::git::remote_identities(repo, config.github_host())
+        crate::git::remote_identities(repo, &config.forge_hosts())
             .map_err(|error| PrInputError::TargetRead(error.0))?
     } else {
         (repository, origin_repository)
@@ -381,7 +517,7 @@ fn fetch_inner(
     let repository = match &input.repository {
         crate::git::RepositoryIdentity::Repository(target) => target,
         crate::git::RepositoryIdentity::Missing | crate::git::RepositoryIdentity::Hostless => {
-            return Ok(PrView::NeedsGitHubRemote);
+            return Ok(PrView::NeedsForgeRemote);
         }
         crate::git::RepositoryIdentity::Unsupported(host) => {
             return Ok(PrView::UnsupportedHost(host.clone()));
@@ -403,6 +539,17 @@ fn fetch_inner(
         // (`specs/forge-host.md`).
         return Ok(PrView::NoPr);
     }
+    // Exhaustive per-forge dispatch: a new forge must be routed here before it builds
+    // (`specs/forge-providers.md`). Each provider owns its whole read and degrades in-band.
+    match repository.forge() {
+        crate::git::Forge::GitLab => {
+            return Ok(crate::gitlab::fetch(repo, input, repository, cancelled));
+        }
+        crate::git::Forge::AzureDevOps => {
+            return Ok(crate::azure_devops::fetch(repo, input, repository, cancelled));
+        }
+        crate::git::Forge::GitHub => {}
+    }
     let target = FetchTarget {
         repo,
         host: repository.host(),
@@ -414,17 +561,9 @@ fn fetch_inner(
     let head = nominated_head(&input.local);
     let assoc =
         associate_points(&target, source, &input.local.points, &input.local.absorbed, head)?;
-    let number = match pick_open(&assoc.open, input) {
-        Pick::One(n) => n,
-        Pick::Ambiguous(count) => {
-            return Ok(PrView::Ambiguous(count));
-        }
-        Pick::None => match pick_merged(&assoc.merged).or_else(|| pick_closed(&assoc.closed)) {
-            Some(n) => n,
-            None => {
-                return Ok(PrView::NoPr);
-            }
-        },
+    let number = match resolve_pick(&assoc, input) {
+        Ok(number) => number,
+        Err(view) => return Ok(view),
     };
     let detail = pr_detail(&target, number)?;
     let node = &detail["data"]["repository"]["pullRequest"];
@@ -434,20 +573,31 @@ fn fetch_inner(
     // Sync compares the fetch's pinned HEAD to the PR head, so a checkout or commit landing
     // mid-fetch never pairs one branch's PR with another branch's count.
     let pr_head = node["headRefOid"].as_str().unwrap_or_default();
-    let sync = match input.local.head_oid.as_deref() {
-        Some(pin) if !pr_head.is_empty() => derive_sync(
-            crate::git::ahead_behind_oids(repo, pin, pr_head)
-                .map_err(|error| GhError::LocalGit(error.0))?,
-        ),
-        _ => Sync::Unknown,
-    };
+    let sync = local_sync(repo, input.local.head_oid.as_deref(), pr_head)
+        .map_err(|error| GhError::LocalGit(error.0))?;
     Ok(PrView::Pr(Box::new(build_snapshot(node, sync))))
+}
+
+/// The local sync against the PR's reported head: `Unknown` when either side is unpinned,
+/// otherwise the ahead/behind derivation. Shared by all three providers so the unpinned
+/// handling cannot drift.
+pub(crate) fn local_sync(
+    repo: &Path,
+    pin: Option<&str>,
+    pr_head: &str,
+) -> Result<Sync, crate::git::GitFail> {
+    match pin {
+        Some(pin) if !pr_head.is_empty() => {
+            Ok(derive_sync(crate::git::ahead_behind_oids(repo, pin, pr_head)?))
+        }
+        _ => Ok(Sync::Unknown),
+    }
 }
 
 /// The local branch's position relative to the PR head, from `git`'s ahead/behind counts. A
 /// diverged branch (both nonzero) leads with the unpushed count — the headline case. `None`
 /// (the PR head isn't local yet) stays explicitly unknown rather than guessing.
-fn derive_sync(ahead_behind: Option<(u32, u32)>) -> Sync {
+pub(crate) fn derive_sync(ahead_behind: Option<(u32, u32)>) -> Sync {
     match ahead_behind {
         None => Sync::Unknown,
         Some((0, 0)) => Sync::InSync,
@@ -466,21 +616,26 @@ struct FetchTarget<'a> {
 
 /// One PR from the association query, reduced to the pick-relevant fields.
 #[derive(Debug)]
-struct AssocPr {
-    number: u64,
-    head_oid: String,
-    head_ref: String,
-    merged_at: String,
-    created_at: String,
+pub(crate) struct AssocPr {
+    pub(crate) number: u64,
+    pub(crate) head_oid: String,
+    pub(crate) head_ref: String,
+    pub(crate) merged_at: String,
+    pub(crate) created_at: String,
+    /// The admission read's full payload node, when it already is the complete pull
+    /// request — Azure DevOps admits only through enumerations, whose nodes are full, so
+    /// its picks carry one and need no detail read. `None` when the association returns
+    /// reduced fields, as GitHub's and GitLab's do.
+    pub(crate) raw: Option<Value>,
 }
 
 /// The association result, split by lifecycle: open and merged from the commit
 /// association, closed-unmerged from the exact-identity name lookup.
 #[derive(Debug, Default)]
-struct Association {
-    open: Vec<AssocPr>,
-    merged: Vec<AssocPr>,
-    closed: Vec<AssocPr>,
+pub(crate) struct Association {
+    pub(crate) open: Vec<AssocPr>,
+    pub(crate) merged: Vec<AssocPr>,
+    pub(crate) closed: Vec<AssocPr>,
 }
 
 /// The repository the association query runs against: the origin repository, where the
@@ -497,7 +652,7 @@ fn select_source<'a>(
 /// The pinned `HEAD` as one more exact-identity nomination, unless a point already
 /// carries the same OID. A nominating `HEAD` sits outside base history, so it can never
 /// be an absorbed candidate (`specs/forge-host.md`).
-fn nominated_head(local: &crate::git::PrLocalState) -> Option<&str> {
+pub(crate) fn nominated_head(local: &crate::git::PrLocalState) -> Option<&str> {
     local
         .head_oid
         .as_deref()
@@ -595,7 +750,7 @@ fn build_association_query(oids: usize, closed: &[(String, String, usize, String
 }
 
 /// Push `pr` unless its number is already in `bucket` — a PR's identity is its number.
-fn push_unique(bucket: &mut Vec<AssocPr>, pr: AssocPr) {
+pub(crate) fn push_unique(bucket: &mut Vec<AssocPr>, pr: AssocPr) {
     if !bucket.iter().any(|have| have.number == pr.number) {
         bucket.push(pr);
     }
@@ -624,6 +779,8 @@ fn parse_association(
             head_ref: node["headRefName"].as_str().unwrap_or_default().to_string(),
             merged_at: node["mergedAt"].as_str().unwrap_or_default().to_string(),
             created_at: node["createdAt"].as_str().unwrap_or_default().to_string(),
+            // An association node is a reduced row, never the full pull request.
+            raw: None,
         })
     };
     for i in 0..points.len() + absorbed.len() + head.iter().count() {
@@ -675,7 +832,7 @@ fn parse_association(
 
 /// The winner among the open PRs (`specs/forge-host.md` "Resolution").
 #[derive(Debug, PartialEq, Eq)]
-enum Pick {
+pub(crate) enum Pick {
     One(u64),
     Ambiguous(usize),
     None,
@@ -684,7 +841,20 @@ enum Pick {
 /// Pick the open PR: a lone PR wins; several disambiguate by a head equal to the pinned
 /// `HEAD`, then a head equal to a publication point, then the head named by the recorded
 /// upstream — each only when exactly one matches. Failing all three, the count surfaces.
-fn pick_open(open: &[AssocPr], input: &PrFetchInput) -> Pick {
+/// Resolve the association to the one PR the tab shows — an open pick wins, then the merged
+/// epilogue, then the closed one (`specs/forge-host.md` — Resolution). The one enforcement
+/// site of that precedence for every provider; `Err` carries the view to show instead.
+pub(crate) fn resolve_pick(assoc: &Association, input: &PrFetchInput) -> Result<u64, PrView> {
+    match pick_open(&assoc.open, input) {
+        Pick::One(number) => Ok(number),
+        Pick::Ambiguous(count) => Err(PrView::Ambiguous(count)),
+        Pick::None => {
+            pick_merged(&assoc.merged).or_else(|| pick_closed(&assoc.closed)).ok_or(PrView::NoPr)
+        }
+    }
+}
+
+pub(crate) fn pick_open(open: &[AssocPr], input: &PrFetchInput) -> Pick {
     match open {
         [] => Pick::None,
         [only] => Pick::One(only.number),
@@ -729,12 +899,12 @@ fn newest_by(prs: &[AssocPr], key: impl Fn(&AssocPr) -> &str) -> Option<u64> {
 }
 
 /// The newest-merged PR containing a publication point.
-fn pick_merged(merged: &[AssocPr]) -> Option<u64> {
+pub(crate) fn pick_merged(merged: &[AssocPr]) -> Option<u64> {
     newest_by(merged, |pr| &pr.merged_at)
 }
 
 /// The newest closed-unmerged PR whose head is exactly a publication point.
-fn pick_closed(closed: &[AssocPr]) -> Option<u64> {
+pub(crate) fn pick_closed(closed: &[AssocPr]) -> Option<u64> {
     newest_by(closed, |pr| &pr.created_at)
 }
 
@@ -858,6 +1028,24 @@ fn derive_merge(mergeable: Option<&str>, state: Option<&str>) -> Merge {
     }
 }
 
+/// Insert or replace by name — the latest run for a check name wins, so a re-run
+/// replaces its earlier entry. Shared by every provider's checks assembly.
+pub(crate) fn upsert_latest(checks: &mut Vec<Check>, check: Check) {
+    if let Some(slot) = checks.iter_mut().find(|c| c.name == check.name) {
+        *slot = check;
+    } else {
+        checks.push(check);
+    }
+}
+
+/// The shared comment finish: collapse each bot's PR-level posts to its latest, then order
+/// newest first — ISO-8601 `…Z` strings sort lexically in chronological order
+/// (`specs/forge-host.md`).
+pub(crate) fn finish_comments(out: &mut Vec<Comment>) {
+    dedup_bot_prose(out);
+    out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+}
+
 /// The latest run per check name, normalised from check runs and commit statuses.
 fn normalize_checks(rollup: &Value) -> Vec<Check> {
     let mut out: Vec<Check> = Vec::new();
@@ -868,12 +1056,7 @@ fn normalize_checks(rollup: &Value) -> Vec<Check> {
             continue;
         }
         let status = check_status(node);
-        // Latest wins: a later array entry for the same name (a re-run) replaces the earlier.
-        if let Some(slot) = out.iter_mut().find(|c| c.name == name) {
-            *slot = Check { name, status };
-        } else {
-            out.push(Check { name, status });
-        }
+        upsert_latest(&mut out, Check { name, status });
     }
     out
 }
@@ -948,9 +1131,7 @@ fn merge_comments(reviews: &Value, issues: &Value, threads: &Value) -> Vec<Comme
         });
     }
 
-    dedup_bot_prose(&mut out);
-    // Newest first: ISO-8601 `…Z` strings sort lexically in chronological order.
-    out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    finish_comments(&mut out);
     out
 }
 
@@ -961,18 +1142,31 @@ fn prose_comment(
     created_at: Option<&str>,
 ) -> Comment {
     let login = user["login"].as_str().unwrap_or("").to_string();
+    let bot = is_bot(&login);
+    prose_row(kind, login, bot, body, created_at.unwrap_or("").to_string())
+}
+
+/// One PR-level prose row with the defaults every non-`finding` comment shares. Both
+/// providers build their `review`/`comment` rows through this one shape.
+pub(crate) fn prose_row(
+    kind: CommentKind,
+    author: String,
+    author_is_bot: bool,
+    body: String,
+    created_at: String,
+) -> Comment {
     let anchor = match kind {
         CommentKind::Review => "review",
         _ => "comment",
     };
     Comment {
         kind,
-        author_is_bot: is_bot(&login),
-        author: login,
+        author_is_bot,
+        author,
         anchor: anchor.to_string(),
         body,
         snippet: None,
-        created_at: created_at.unwrap_or("").to_string(),
+        created_at,
         is_resolved: false,
         is_outdated: false,
         reply_count: 0,
@@ -993,13 +1187,42 @@ fn dedup_bot_prose(out: &mut Vec<Comment>) {
     }
     out.retain(|c| {
         !(c.author_is_bot && c.kind != CommentKind::Finding)
+            // An undated review is a standing verdict, not repeated prose — GitLab's approvals
+            // surface carries no timestamp — so it never loses newest-wins to a dated post.
+            || (c.kind == CommentKind::Review && c.created_at.is_empty())
             || keep_newest.get(&c.author) == Some(&c.created_at)
     });
+}
+
+/// Percent-encode one URL path or query value. A GitLab project path's `/` separators encode
+/// to `%2F`, which is how its API addresses a project by path; an Azure DevOps browse link
+/// re-encodes the space a decoded project name carries.
+pub(crate) fn urlencode(value: &str) -> String {
+    use std::fmt::Write;
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => {
+                let _ = write!(out, "%{byte:02X}");
+            }
+        }
+    }
+    out
 }
 
 /// Whether a GitHub login is an app/bot (`…[bot]`).
 fn is_bot(login: &str) -> bool {
     login.ends_with("[bot]")
+}
+
+/// The shared name-only bot heuristics for forges that carry no bot flag: the `[bot]`
+/// suffix, or a `-bot` suffix. The hyphen is load-bearing: it admits `gitlab-bot` while a
+/// human `Talbot` stays human.
+pub(crate) fn is_named_bot(name: &str) -> bool {
+    is_bot(name) || name.to_ascii_lowercase().ends_with("-bot")
 }
 
 /// A relative age label (`5m`, `2h`, `3d`, `2w`) from an ISO-8601 `…Z` timestamp, against `now`.
@@ -1211,6 +1434,7 @@ mod tests {
             head_ref: head_ref.to_string(),
             merged_at: String::new(),
             created_at: String::new(),
+            raw: None,
         }
     }
 
@@ -1221,11 +1445,12 @@ mod tests {
         let gated = |input: &PrFetchInput| fetch(Path::new("."), input);
         let mut missing = input("head", vec![], None);
         missing.repository = crate::git::RepositoryIdentity::Missing;
-        assert_eq!(gated(&missing), PrView::NeedsGitHubRemote);
+        assert_eq!(gated(&missing), PrView::NeedsForgeRemote);
 
         let mut unsupported = input("head", vec![], None);
-        unsupported.repository = crate::git::RepositoryIdentity::Unsupported("gitlab.com".into());
-        assert_eq!(gated(&unsupported), PrView::UnsupportedHost("gitlab.com".into()));
+        unsupported.repository =
+            crate::git::RepositoryIdentity::Unsupported("bitbucket.org".into());
+        assert_eq!(gated(&unsupported), PrView::UnsupportedHost("bitbucket.org".into()));
 
         let repo = crate::git::RepositoryIdentity::Repository(
             crate::git::RepoTarget::new("github.com", "owner", "repo").unwrap(),
@@ -1531,6 +1756,32 @@ mod tests {
         let cs = merge_comments(&reviews, &serde_json::json!([]), &threads);
         assert_eq!(cs.iter().filter(|c| c.kind == CommentKind::Finding).count(), 2);
         assert_eq!(cs.iter().filter(|c| c.kind == CommentKind::Review).count(), 1); // prose collapsed
+    }
+
+    #[test]
+    fn an_undated_bot_review_survives_beside_the_bots_dated_prose() {
+        // GitLab approvals and Azure DevOps votes arrive as reviews with no timestamp: a
+        // standing verdict, not repeated prose, so newest-wins dedup never drops one.
+        let row = |kind, anchor: &str, body: &str, created_at: &str| Comment {
+            kind,
+            author: "claude[bot]".to_string(),
+            author_is_bot: true,
+            anchor: anchor.to_string(),
+            body: body.to_string(),
+            snippet: None,
+            created_at: created_at.to_string(),
+            is_resolved: false,
+            is_outdated: false,
+            reply_count: 0,
+        };
+        let mut out = vec![
+            row(CommentKind::Review, "review", "approved", ""),
+            row(CommentKind::Comment, "comment", "old prose", "2026-06-27T09:00:00Z"),
+            row(CommentKind::Comment, "comment", "new prose", "2026-06-27T10:00:00Z"),
+        ];
+        dedup_bot_prose(&mut out);
+        let bodies: Vec<_> = out.iter().map(|c| c.body.as_str()).collect();
+        assert_eq!(bodies, ["approved", "new prose"]);
     }
 
     #[test]

@@ -1567,7 +1567,7 @@ fn footer_row1(app: &App, w: usize) -> (Vec<Span<'static>>, Vec<FooterAction>) {
     if let Some(s) = pr_state {
         let primary_w = primary.map_or(0, |a| entry_body_width(app, a));
         let budget = w.saturating_sub(used + primary_w + reserve + 4).max(8);
-        let text = truncate_width(&format!("{}   ", pr_state_line(s)), budget);
+        let text = truncate_width(&format!("{}   ", pr_state_line(app, s)), budget);
         used += text.chars().count();
         spans.push(Span::styled(text, Style::default().fg(p.subtext0)));
     }
@@ -2355,9 +2355,9 @@ fn render_pr_header(frame: &mut Frame, app: &App, area: Rect) {
     // A resolved PR shows its identity chip; with no PR the header carries nothing — the read
     // pane is the single home for the empty/degraded message, not repeated across all regions.
     if let forge::PrView::Pr(s) = &app.pr {
-        let number = format!("#{}", s.number);
+        let number = format!("{}{}", app.pr_forge.sigil(), s.number);
         let (status, color) = pr_status_chip(p, s);
-        let chip_w = pr_chip_width(s);
+        let chip_w = pr_chip_width(app, s);
         // The resolved head branch, dim left of the chip — the name that resolved, which can
         // differ from the worktree's local branch; `⑂` marks a fork head so a same-named
         // fork PR is visible (specs/forge-host.md). Dropped first when the bar is narrow.
@@ -2419,13 +2419,16 @@ fn pr_status_chip(p: &Palette, s: &forge::PrSnapshot) -> (&'static str, Color) {
 
 /// The display width of the header's `status #number ↗` chip — shared by the painter and the
 /// click hit-test so they agree on its right-anchored column range.
-fn pr_chip_width(s: &forge::PrSnapshot) -> usize {
-    pr_status_word(s).width() + " ".width() + format!("#{}", s.number).width() + " ↗".width()
+fn pr_chip_width(app: &App, s: &forge::PrSnapshot) -> usize {
+    pr_status_word(s).width()
+        + " ".width()
+        + format!("{}{}", app.pr_forge.sigil(), s.number).width()
+        + " ↗".width()
 }
 
 /// The PR's merge, sync, and checks status for the footer, joined by `·`. Merge and sync show
 /// only for an open PR — they are meaningless once it is merged or closed.
-fn pr_state_line(s: &forge::PrSnapshot) -> String {
+fn pr_state_line(app: &App, s: &forge::PrSnapshot) -> String {
     let mut parts: Vec<String> = Vec::new();
     if s.state == forge::PrState::Open {
         match s.merge {
@@ -2442,10 +2445,10 @@ fn pr_state_line(s: &forge::PrSnapshot) -> String {
     }
     parts.push(checks_summary(s));
     parts.push(format!("{} comments", s.comments.len()));
-    // A capped surface means the lists are a prefix; point at GitHub for the rest rather than
-    // showing the partial counts as if complete (specs/forge-host.md).
+    // A capped surface means the lists are a prefix; point at the forge for the rest rather
+    // than showing the partial counts as if complete (specs/forge-host.md).
     if s.truncated {
-        parts.push("+more on GitHub ↗".into());
+        parts.push(format!("+more on {} ↗", app.pr_forge.display_name()));
     }
     parts.join(" · ")
 }
@@ -2663,7 +2666,7 @@ fn render_pr_read(frame: &mut Frame, app: &App, area: Rect) {
     let title = match selected {
         Some(cm) => format!("@{} · {}", cm.author, cm.anchor),
         None if app.pr_on_description() => "description".to_string(),
-        None => "PR".to_string(),
+        None => app.pr_forge.abbr().to_string(),
     };
     let block = bordered(&title, app.focus == Focus::Diff, p);
     let inner = block.inner(area);
@@ -2735,7 +2738,11 @@ fn render_pr_read(frame: &mut Frame, app: &App, area: Rect) {
             let plural = if cm.reply_count == 1 { "reply" } else { "replies" };
             lines.push(Line::raw(""));
             lines.push(Line::from(Span::styled(
-                format!("↳ {} {plural} — open on GitHub to read", cm.reply_count),
+                format!(
+                    "↳ {} {plural} — open on {} to read",
+                    cm.reply_count,
+                    app.pr_forge.display_name()
+                ),
                 Style::default().fg(p.overlay0),
             )));
         }
@@ -2749,7 +2756,7 @@ fn render_pr_read(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         // The empty-state remedy can outgrow a narrow pane; wrap it rather than clip it.
         let refresh = app.keymap().hint(crate::keymap::Action::Refresh);
-        for piece in wrap_text(&pr_empty_msg(&app.pr, refresh), width.max(1)) {
+        for piece in wrap_text(&pr_empty_msg(&app.pr, app.pr_forge, refresh), width.max(1)) {
             lines.push(Line::from(Span::styled(piece, Style::default().fg(p.overlay0))));
         }
     }
@@ -2772,34 +2779,46 @@ fn render_pr_read(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-/// The one-line message for a loading, empty, or degraded PR view. `refresh` is the active
-/// `refresh` binding's hint key.
-fn pr_empty_msg(view: &forge::PrView, refresh: crate::keymap::Key) -> String {
+/// The one-line message for a loading, empty, or degraded PR view, in the resolved forge's
+/// noun (`specs/forge-providers.md`). `refresh` is the active `refresh` binding's hint key.
+fn pr_empty_msg(
+    view: &forge::PrView,
+    forge: crate::git::Forge,
+    refresh: crate::keymap::Key,
+) -> String {
     if let Some(message) = view.retry_remedy(refresh) {
         return message;
     }
+    let noun = forge.noun();
+    let abbr = forge.abbr();
     match view {
         forge::PrView::Loading => "loading…".into(),
         forge::PrView::Pending | forge::PrView::Pr(_) => String::new(),
-        forge::PrView::Detached => "No pull request found — HEAD is detached.".into(),
-        forge::PrView::NoPr => "No pull request yet. Ready to ship?".into(),
+        forge::PrView::Detached => format!("No {noun} found — HEAD is detached."),
+        forge::PrView::NoPr => format!("No {noun} yet. Ready to ship?"),
         forge::PrView::Ambiguous(n) => {
-            format!("Found {n} open PRs containing this work. Keep one open, then press {refresh}.")
+            format!(
+                "Found {n} open {abbr}s containing this work. Keep one open, then press {refresh}."
+            )
         }
-        forge::PrView::NoGh
-        | forge::PrView::NotAuthed(_)
+        forge::PrView::NoCli(_)
+        | forge::PrView::NoExtension(_)
+        | forge::PrView::NotAuthed(..)
         | forge::PrView::GitError(_)
-        | forge::PrView::Error(_) => {
+        | forge::PrView::Error(..) => {
             unreachable!("retry failures returned above")
         }
-        forge::PrView::NeedsGitHubRemote => {
-            "PRs need a GitHub remote named upstream or origin.".into()
+        forge::PrView::NeedsForgeRemote => {
+            "The PR tab needs a GitHub, GitLab, or Azure DevOps remote named upstream or origin."
+                .into()
         }
         forge::PrView::UnsupportedHost(host) => {
-            format!("Unsupported host: {host}. Using GitHub Enterprise? Set `github_host`.")
+            format!(
+                "Unsupported host: {host}. Self-hosted? Set `github_host`, `gitlab_host`, or `azure_devops_host`."
+            )
         }
         forge::PrView::MalformedOrigin(host) => {
-            format!("The origin remote must point to a GitHub owner/repository on {host}.")
+            format!("The origin remote must point to a repository path on {host}.")
         }
     }
 }
@@ -2814,7 +2833,7 @@ pub fn hit_pr_open(area: Rect, app: &App, col: u16, row: u16) -> bool {
     if row != area.y {
         return false;
     }
-    let chip_w = pr_chip_width(s) as u16;
+    let chip_w = pr_chip_width(app, s) as u16;
     // The chip occupies the last `chip_w` columns; `saturating_sub` keeps the bound overflow-free.
     col >= area.width.saturating_sub(chip_w) && col < area.width
 }

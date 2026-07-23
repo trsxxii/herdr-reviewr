@@ -1,7 +1,7 @@
 ---
 Status: Current
 Created: 2026-07-10
-Last edited: 2026-07-21
+Last edited: 2026-07-23
 ---
 
 # Configuration
@@ -21,6 +21,8 @@ toggle_placement = "overlay"
 toggle_direction = "down"
 auto_open = false
 github_host = "github.example.com"
+gitlab_host = "git.corp.example"
+azure_devops_host = "tfs.corp.example"
 
 [keybindings]
 comment = ["c", "ㅊ"]
@@ -38,6 +40,8 @@ find    = ["ctrl+f"]
 | `toggle_direction`   | `right` or `down`                                                                  |
 | `auto_open`          | boolean                                                                            |
 | `github_host`        | bare hostname other than `github.com`                                              |
+| `gitlab_host`        | bare hostname other than `gitlab.com`                                              |
+| `azure_devops_host`  | bare hostname other than `dev.azure.com`                                           |
 | `keybindings`        | table of actions from the keymap in `input.md`, each a non-empty array of keys     |
 
 ## Behavior
@@ -56,6 +60,8 @@ An omitted key uses that key's default. An invalid file applies none of its keys
 Each `base_branches` entry canonicalizes to one bare branch name: a leading `refs/heads/`, `refs/remotes/origin/`, or `origin/` prefix is stripped. Duplicate entries collapse to the first occurrence. Every consumer resolves an entry through `refs/remotes/origin/<name>`, then `refs/heads/<name>`. The `--base` flag resolves verbatim first, then as a canonical entry. `origin/HEAD` backstops an unresolvable list (`review-model.md`).
 
 A repository may lack every ref named by a valid `base_branches` list. That is runtime absence, not invalid configuration.
+
+A hostname is recognized by at most one forge. A host key naming another host key's value, or any forge's built-in host (`*.visualstudio.com` included), is an invalid value (→ CFG-WHOLE-FILE).
 
 An error names the config path and the read, syntax, key, or value failure. It states the expected form when a value is invalid.
 

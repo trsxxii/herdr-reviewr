@@ -71,7 +71,7 @@ pub(crate) fn canonical_base(entry: &str) -> String {
         .to_string()
 }
 
-const PLUGIN_CONFIG_KEYS: [&str; 9] = [
+const PLUGIN_CONFIG_KEYS: [&str; 11] = [
     "theme",
     "base_branches",
     "default_scope",
@@ -80,6 +80,8 @@ const PLUGIN_CONFIG_KEYS: [&str; 9] = [
     "toggle_direction",
     "auto_open",
     "github_host",
+    "gitlab_host",
+    "azure_devops_host",
     "keybindings",
 ];
 
@@ -168,6 +170,8 @@ pub struct PluginConfig {
     toggle_direction: ToggleDirection,
     auto_open: bool,
     github_host: Option<String>,
+    gitlab_host: Option<String>,
+    azure_devops_host: Option<String>,
     keymap: crate::keymap::Keymap,
 }
 
@@ -182,6 +186,8 @@ impl Default for PluginConfig {
             toggle_direction: ToggleDirection::Right,
             auto_open: true,
             github_host: None,
+            gitlab_host: None,
+            azure_devops_host: None,
             keymap: crate::keymap::Keymap::default(),
         }
     }
@@ -222,6 +228,23 @@ impl PluginConfig {
         self.github_host.as_deref()
     }
 
+    pub fn gitlab_host(&self) -> Option<&str> {
+        self.gitlab_host.as_deref()
+    }
+
+    pub fn azure_devops_host(&self) -> Option<&str> {
+        self.azure_devops_host.as_deref()
+    }
+
+    /// The forge host set one fetch resolves remotes against (`specs/forge-host.md`).
+    pub fn forge_hosts(&self) -> crate::git::ForgeHosts<'_> {
+        crate::git::ForgeHosts {
+            github: self.github_host(),
+            gitlab: self.gitlab_host(),
+            azure_devops: self.azure_devops_host(),
+        }
+    }
+
     /// The resolved keymap: the defaults with this snapshot's `[keybindings]` applied.
     pub fn keymap(&self) -> &crate::keymap::Keymap {
         &self.keymap
@@ -247,6 +270,8 @@ impl PluginConfig {
             "toggle_direction": self.toggle_direction.as_str(),
             "auto_open": self.auto_open,
             "github_host": self.github_host,
+            "gitlab_host": self.gitlab_host,
+            "azure_devops_host": self.azure_devops_host,
             "keybindings": keybindings,
         })
     }
@@ -424,11 +449,34 @@ fn parse_plugin_config(path: &Path) -> Result<PluginConfig, PluginConfigError> {
             value.as_bool().ok_or_else(|| value_error(path, "auto_open", "a boolean"))?;
     }
     if let Some(value) = table.get("github_host") {
-        let host = string_value(path, "github_host", value, "a bare hostname outside github.com")?;
-        if !valid_enterprise_host(host) {
-            return Err(value_error(path, "github_host", "a bare hostname other than github.com"));
+        config.github_host = Some(parse_forge_host(path, "github_host", value)?);
+    }
+    if let Some(value) = table.get("gitlab_host") {
+        config.gitlab_host = Some(parse_forge_host(path, "gitlab_host", value)?);
+    }
+    if let Some(value) = table.get("azure_devops_host") {
+        config.azure_devops_host = Some(parse_forge_host(path, "azure_devops_host", value)?);
+    }
+    // A hostname is recognized by at most one forge; a cross-key collision is an invalid
+    // value under CFG-WHOLE-FILE (`specs/config.md`). Scanned as a set so a new key joins by
+    // being listed, in the parse order above: the later key's error names the earlier owner.
+    let host_keys = [
+        ("github_host", &config.github_host),
+        ("gitlab_host", &config.gitlab_host),
+        ("azure_devops_host", &config.azure_devops_host),
+    ];
+    for (index, (key, value)) in host_keys.iter().enumerate() {
+        let Some(value) = value else { continue };
+        if let Some((owner, _)) =
+            host_keys[..index].iter().find(|(_, earlier)| earlier.as_ref() == Some(value))
+        {
+            return Err(PluginConfigError::new(
+                path,
+                format!(
+                    "invalid value for `{key}`; expected a hostname no other forge recognizes, but {value:?} is already `{owner}`"
+                ),
+            ));
         }
-        config.github_host = Some(host.to_ascii_lowercase());
     }
     if let Some(value) = table.get("keybindings") {
         config.keymap = parse_keybindings(path, value)?;
@@ -535,9 +583,22 @@ fn unknown_key_error(path: &Path, key: &str, options: &str) -> PluginConfigError
     PluginConfigError::new(path, format!("unknown key {key:?}; expected one of {options}"))
 }
 
-fn valid_enterprise_host(host: &str) -> bool {
+/// Parse one self-hosted forge key: a bare hostname naming no built-in forge host — a
+/// hostname is recognized by at most one forge (`specs/config.md`). The built-in set has
+/// one authority, `git::forge_for_host`, asked here with no self-hosted keys.
+fn parse_forge_host(
+    path: &Path,
+    key: &str,
+    value: &toml::Value,
+) -> Result<String, PluginConfigError> {
+    let expected = "a bare hostname outside the built-in forge hosts";
+    let host = string_value(path, key, value, expected)?;
     let lower = host.to_ascii_lowercase();
-    lower != "github.com" && valid_host_syntax(host)
+    let built_in = crate::git::forge_for_host(&lower, &crate::git::ForgeHosts::default());
+    if !valid_host_syntax(host) || built_in.is_some() {
+        return Err(value_error(path, key, expected));
+    }
+    Ok(lower)
 }
 
 /// The bare ASCII DNS-name grammar shared by configured and selected canonical hosts.
@@ -716,6 +777,14 @@ mod tests {
             ("auto_open = \"yes\"\n", "`auto_open`"),
             ("github_host = \"https://github.example.com\"\n", "`github_host`"),
             ("github_host = \"github.com\"\n", "`github_host`"),
+            ("github_host = \"gitlab.com\"\n", "`github_host`"),
+            ("gitlab_host = \"gitlab.com\"\n", "`gitlab_host`"),
+            ("gitlab_host = \"github.com\"\n", "`gitlab_host`"),
+            ("gitlab_host = \"https://git.corp.example\"\n", "`gitlab_host`"),
+            ("azure_devops_host = \"dev.azure.com\"\n", "`azure_devops_host`"),
+            // Any organization label matches the built-in wildcard (`specs/config.md`).
+            ("azure_devops_host = \"foo.visualstudio.com\"\n", "`azure_devops_host`"),
+            ("github_host = \"bar.visualstudio.com\"\n", "`github_host`"),
         ];
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
@@ -724,6 +793,57 @@ mod tests {
             let error = super::plugin_config_in(dir.path()).unwrap_err().to_string();
             assert!(error.contains(key), "{text}: {error}");
             assert!(error.contains("expected"), "{text}: {error}");
+        }
+    }
+
+    #[test]
+    fn gitlab_host_parses_and_a_cross_key_collision_fails_naming_both_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "gitlab_host = \"Git.Corp.EXAMPLE\"\n").unwrap();
+        let config = super::plugin_config_in(dir.path()).unwrap();
+        assert_eq!(config.gitlab_host(), Some("git.corp.example"));
+
+        // The same hostname under two forge keys is an invalid file (CFG-WHOLE-FILE): a
+        // hostname is recognized by at most one forge (`specs/config.md`).
+        std::fs::write(
+            &path,
+            "github_host = \"code.corp.example\"\ngitlab_host = \"code.corp.example\"\n",
+        )
+        .unwrap();
+        let error = super::plugin_config_in(dir.path()).unwrap_err().to_string();
+        assert!(error.contains("gitlab_host"), "{error}");
+        assert!(error.contains("github_host"), "{error}");
+        assert!(error.contains("code.corp.example"), "{error}");
+        assert!(error.contains("expected"), "{error}");
+    }
+
+    #[test]
+    fn azure_devops_host_parses_and_every_cross_key_collision_fails_naming_both_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "azure_devops_host = \"Tfs.Corp.EXAMPLE\"\n").unwrap();
+        let config = super::plugin_config_in(dir.path()).unwrap();
+        assert_eq!(config.azure_devops_host(), Some("tfs.corp.example"));
+        assert_eq!(config.forge_hosts().azure_devops, Some("tfs.corp.example"));
+
+        // Each pair under one hostname is an invalid file (CFG-WHOLE-FILE): a hostname is
+        // recognized by at most one forge (`specs/config.md`).
+        let pairs = [
+            ("github_host", "azure_devops_host"),
+            ("gitlab_host", "azure_devops_host"),
+            ("github_host", "gitlab_host"),
+        ];
+        for (first, second) in pairs {
+            std::fs::write(
+                &path,
+                format!("{first} = \"code.corp.example\"\n{second} = \"code.corp.example\"\n"),
+            )
+            .unwrap();
+            let error = super::plugin_config_in(dir.path()).unwrap_err().to_string();
+            assert!(error.contains(first), "{first}/{second}: {error}");
+            assert!(error.contains(second), "{first}/{second}: {error}");
+            assert!(error.contains("code.corp.example"), "{first}/{second}: {error}");
         }
     }
 

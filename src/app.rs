@@ -65,6 +65,16 @@ pub enum Tab {
     Pr,
 }
 
+/// What a pending PR refresh may do to a fetch already in flight: an ambient trigger —
+/// tab entry, a turn end, the fallback timer — rides it, the user's `refresh` key
+/// supersedes it (specs/forge-host.md). `Ord` so merging pending requests keeps the
+/// stronger kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RefreshKind {
+    Ambient,
+    Forced,
+}
+
 impl Tab {
     /// Whether this tab uses the file-tree / diff machinery (and so the per-tab stash). The
     /// `PR` tab does not — it holds its own state and never swaps into the diff fields.
@@ -458,6 +468,10 @@ pub struct App {
     pub should_quit: bool,
     /// The read-only `PR` tab's view of the pull request (`specs/forge-host.md`).
     pub pr: forge::PrView,
+    /// The resolved repository target's forge, from the latest input probe. Display strings
+    /// pick their noun and reference form from it (`specs/forge-providers.md`); a forge
+    /// change always changes the target, which clears the PR before a mismatch could paint.
+    pub pr_forge: crate::git::Forge,
     /// Persistent same-input fetch remedy shown without replacing the visible snapshot.
     pr_notice: Option<String>,
     /// A same-input refresh that crossed the loading-indicator delay.
@@ -472,9 +486,9 @@ pub struct App {
     pr_nav_max_scroll: std::cell::Cell<usize>,
     /// A cursor move requests the smallest navigator scroll that reveals the selection.
     reveal_pr_nav: std::cell::Cell<bool>,
-    /// Set when the PR view needs a (re)fetch; the event loop services it after drawing, so a
-    /// `loading` frame shows before the blocking `gh` calls run.
-    pub pr_pending: bool,
+    /// The PR refresh awaiting dispatch, if any; the event loop services it after drawing, so
+    /// a `loading` frame shows before the blocking CLI calls run.
+    pub pr_pending: Option<RefreshKind>,
     /// The world refresh request awaiting dispatch, if any; the event loop hands it to
     /// the worker after the frame paints (specs/tui.md).
     pub world_request: Option<crate::world::WorldRequest>,
@@ -599,6 +613,7 @@ impl App {
             keys_expanded: false,
             should_quit: false,
             pr: forge::PrView::Pending,
+            pr_forge: crate::git::Forge::GitHub,
             pr_notice: None,
             pr_refreshing: false,
             pr_cursor: 0,
@@ -606,7 +621,7 @@ impl App {
             pr_nav_scroll: std::cell::Cell::new(0),
             pr_nav_max_scroll: std::cell::Cell::new(usize::MAX),
             reveal_pr_nav: std::cell::Cell::new(true),
-            pr_pending: false,
+            pr_pending: None,
             world_request: None,
             search: None,
             search_dirty: false,
@@ -683,7 +698,7 @@ impl App {
         self.close_search();
         self.close_find();
         self.config = PluginConfigState::Blocked { error };
-        self.pr_pending = false;
+        self.pr_pending = None;
     }
 
     /// The active keymap: the snapshot's while ready, the defaults while blocked. The blocked
@@ -1632,6 +1647,12 @@ impl App {
         Ok(())
     }
 
+    /// Queue a PR refresh, merging into any request already pending: the stronger kind
+    /// wins, so an ambient trigger can never downgrade the user's commanded refresh.
+    pub fn request_pr_refresh(&mut self, kind: RefreshKind) {
+        self.pr_pending = self.pr_pending.max(Some(kind));
+    }
+
     /// Switch to `tab`, saving the active tab's navigator and read-pane state and restoring the
     /// target's. Each tab keeps its own opened file and scroll, so returning to a tab lands
     /// exactly where you left it (specs/tui.md). The switch frame paints the restored state as
@@ -1648,7 +1669,7 @@ impl App {
         // `loading` frame draws before the blocking fetch the event loop services, and a
         // re-entry keeps the last snapshot on screen while it refetches.
         if tab == Tab::Pr {
-            self.pr_pending = true;
+            self.request_pr_refresh(RefreshKind::Ambient);
             return Ok(());
         }
         // Entering a file tab: bring its state into the diff fields if the other file tab holds
@@ -1855,7 +1876,7 @@ impl App {
             return;
         };
         match crate::browser::open(&url) {
-            Ok(()) => self.status = "opened PR in browser".to_string(),
+            Ok(()) => self.status = format!("opened {} in browser", self.pr_forge.abbr()),
             Err(e) => self.status = e.to_string(),
         }
     }

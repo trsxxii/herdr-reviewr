@@ -38,7 +38,7 @@ One persistent pane, pointed at a git worktree:
   Gruvbox, Tokyo Night, Rosé Pine, Solarized, more.
 
 It **never edits your worktree** and sends nothing on its own. Its only git write is a private
-baseline ref under `refs/reviewr/`. The **PR** tab reads GitHub and never posts.
+baseline ref under `refs/reviewr/`. The **PR** tab reads GitHub, GitLab, or Azure DevOps and never posts.
 
 ## Requirements
 
@@ -47,7 +47,7 @@ baseline ref under `refs/reviewr/`. The **PR** tab reads GitHub and never posts.
 - A **truecolor** terminal with Unicode box-drawing. Pick a theme matching its background
   ([Theme](#theme)).
 - **macOS or Linux.**
-- **`gh`**, authenticated — only the **PR** tab needs it.
+- **`gh`** (GitHub), **`glab`** (GitLab), or **`az`** (Azure DevOps, with the `azure-devops` extension), authenticated — only the **PR** tab needs one.
 
 ## Install
 
@@ -181,11 +181,11 @@ opens in your browser (`http`/`https` only), and an anchor link jumps to its hea
   can comment here too. Ignored paths show dimmed. A wholly-ignored directory (`target/`,
   `node_modules/`) stays one collapsed row until you expand it. `m` flips a `.md` file to a
   read-only preview, so commenting stays in the source view.
-- **PR** — a read-only mirror of the branch's pull request via `gh`: state (draft, open,
-  merged, or closed, plus mergeability and sync), checks with a pass/fail rollup, the
-  description, and every comment, newest first, with `resolved` and `outdated` markers. Bodies
-  render as markdown, code blocks in your theme. `o` opens the PR in the browser. reviewr never
-  posts, resolves, re-runs, or merges.
+- **PR** — a read-only mirror of the branch's pull request on GitHub or Azure DevOps, or
+  merge request on GitLab: state (draft, open, merged, or closed, plus mergeability and sync), checks with a
+  pass/fail rollup, the description, and every comment, newest first, with `resolved` and
+  `outdated` markers. Bodies render as markdown, code blocks in your theme. `o` opens the PR
+  in the browser. reviewr never posts, resolves, re-runs, or merges.
 
 ## Diff scopes
 
@@ -341,24 +341,30 @@ error names both actions.
 `list-wider` and `list-narrower` remain accepted aliases for `navigator-grow` and
 `navigator-shrink`. Normalized config output uses the canonical names.
 
-### GitHub repository and hosts
+### Forge repositories and hosts
 
-A remote named exactly `upstream` with a supported GitHub `owner/repository` fetch URL wins.
-Otherwise the PR tab reads `origin`. A Git read failure stays visible and never falls through.
-A standard fork clone — fork at `origin`, base repository at `upstream` — works without setup.
-Both remotes use their primary fetch URL after Git's `url.*.insteadOf` rewrite. A separate push
-URL does not affect PR reads.
+A remote named exactly `upstream` with a recognized forge repository fetch URL wins. Otherwise
+the PR tab reads `origin`. A Git read failure stays visible and never falls through. A standard
+fork clone — fork at `origin`, base repository at `upstream` — works without setup. Both
+remotes use their primary fetch URL after Git's `url.*.insteadOf` rewrite. A separate push URL
+does not affect PR reads.
 
-GitHub.com works without configuration. For one GitHub Enterprise host, set its bare hostname:
+GitHub.com, GitLab.com, dev.azure.com, and the `*.visualstudio.com` organization hosts work
+without configuration. For one self-hosted instance per forge, set its bare hostname:
 
 ```toml
 github_host = "github.example.com"
+gitlab_host = "git.corp.example"
+azure_devops_host = "tfs.corp.example"
 ```
 
-Matching is exact. SSH aliases like `github.com-work` are not inferred — use a canonical-host
-remote or an `insteadOf` rewrite. A literal Enterprise hostname beginning with `github.com-` is
-valid when configured exactly. `GH_HOST` cannot redirect a PR read. Authenticate with
-`gh auth login --hostname github.example.com`.
+Matching is exact, and a hostname belongs to at most one forge. The one exception is
+Azure DevOps' `*.visualstudio.com` family, which matches any organization label. SSH aliases like
+`github.com-work` are not inferred — use a canonical-host remote or an `insteadOf` rewrite. A
+literal hostname beginning with `github.com-` is valid when configured exactly. `GH_HOST` and
+`GITLAB_HOST` cannot redirect a PR read, and every `az` call pins its organization.
+Authenticate with `gh auth login --hostname github.example.com`,
+`glab auth login --hostname git.corp.example`, or `az login`.
 
 ### Sidebar placement
 
@@ -433,14 +439,16 @@ This is a focused, young tool. The known constraints:
   poll is missed, and the scope shows everything since the last *observed* turn start. Never
   lines the agent didn't write, possibly more than one turn.
 
-**PR tab (GitHub)**
-- **GitHub-only and read-only** — needs an authenticated `gh` and a supported `upstream` or
-  `origin`. Without either it tells you what to fix, and the other tabs keep working.
-- **One repository, never a cross-repository search** — a readable, supported `upstream` is
+**PR tab (GitHub, GitLab, and Azure DevOps)**
+- **Read-only** — needs the forge's authenticated CLI (`gh`, `glab`, or `az`) and a
+  recognized `upstream` or `origin`. Without either it tells you what to fix, and the other
+  tabs keep working. Other forges are not supported.
+- **One repository, never a cross-repository search** — a readable, recognized `upstream` is
   authoritative, otherwise `origin`. Clones that target different parent repositories stay
   separate.
-- **Mirrors the branch's *open* PR** — merged or closed shows as history. Each comment surface
-  caps at one page (100 rows), with a `+more on GitHub ↗` marker when there is more.
+- **Mirrors the branch's *open* PR or MR** — merged or closed shows as history. Each comment
+  surface caps at its newest 100 rows, with a `+more` marker naming the forge when there is
+  more.
 
 **Review model**
 - **Comments are in-memory and single-session** — closing the pane loses any you haven't sent
